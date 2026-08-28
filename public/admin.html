@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control Console — Predict the Gank</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230a1310' stroke='%23ffb648' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23ffb648'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/shared.css">
+<style>
+  .site-header { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; padding: 22px 20px 0; max-width: 760px; margin: 0 auto; }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand-mark { width: 9px; height: 9px; border-radius: 50%; background: var(--amber-400); box-shadow: 0 0 10px rgba(255,182,72,0.7); }
+  .brand-name { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-secondary); }
+  .header-right { display: flex; align-items: center; gap: 14px; }
+
+  @media (max-width: 380px) {
+    .brand-name { font-size: 11px; }
+    .whoami { flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+    .call-sign { font-size: 12px; }
+  }
+
+  .tier-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .tier-chip {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--line);
+    background: var(--ink-950); min-width: 76px;
+  }
+  .tier-chip .tc-label { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+  .tier-chip .tc-time { font-family: var(--font-display); font-size: 17px; color: var(--text-primary); }
+  .tier-chip.is-featured { border-color: var(--amber-500); background: rgba(242, 169, 59, 0.08); }
+  .tier-chip.is-featured .tc-label { color: var(--amber-300); }
+  .tier-chip.is-passed { opacity: 0.45; }
+  .tier-chip.is-passed .tc-time { text-decoration: line-through; text-decoration-color: var(--text-muted); }
+  .tier-chip.is-wildcard { border-style: dashed; }
+  .tier-chip.is-wildcard .tc-time { font-size: 13px; }
+
+  /* ---- auth ---- */
+  #authView { max-width: 380px; margin: 14vh auto 0; padding: 0 20px; }
+  .auth-card h1 { font-size: 34px; margin-bottom: 4px; }
+  .field-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .field-group label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+  .auth-tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--ink-950); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px; }
+  .auth-tabs button { flex: 1; background: transparent; border: none; padding: 8px; font-size: 13px; }
+  .auth-tabs button.active { background: var(--ink-700); }
+  .auth-pane { display: none; flex-direction: column; }
+  .auth-pane.active { display: flex; }
+
+  /* ---- dashboard ---- */
+  #appView { display: none; }
+  .whoami { display: flex; align-items: center; gap: 8px; }
+  .call-sign { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
+
+  .log-row { display: flex; gap: 10px; margin: 22px 0 6px; }
+  #logBtn {
+    flex: 1; padding: 20px; font-family: var(--font-display); font-size: 22px; letter-spacing: 0.04em;
+    position: relative; overflow: hidden;
+  }
+  #logBtn .ripple {
+    position: absolute; border-radius: 50%; background: rgba(23,17,10,0.35);
+    transform: scale(0); animation: ripple 0.6s ease-out forwards; pointer-events: none;
+  }
+  @keyframes ripple { to { transform: scale(3.2); opacity: 0; } }
+
+  .tabs { display: flex; gap: 4px; margin: 26px 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tabs button { background: transparent; border: none; border-radius: 0; padding: 9px 4px; margin-right: 18px; color: var(--text-muted); font-size: 13px; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
+  .tabs button.active { color: var(--text-primary); border-bottom-color: var(--amber-400); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .stat-row { display: flex; gap: 28px; margin-top: 18px; flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat-value { font-family: var(--font-display); font-size: 30px; }
+  .stat-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+
+  #logList .entry { display: flex; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #logList .entry:last-child { border-bottom: none; }
+  #logList .entry time { font-family: var(--font-mono); color: var(--text-primary); }
+
+  .person-pill { display: inline-flex; align-items: center; gap: 7px; background: var(--ink-800); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px 7px 8px; font-size: 13px; }
+  .person-pill .count { font-family: var(--font-mono); color: var(--amber-300); }
+
+  .invite-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 13px; }
+  .invite-row:last-child { border-bottom: none; }
+  .invite-row .code { color: var(--text-primary); letter-spacing: 0.03em; }
+  .invite-row .status.unused { color: var(--status-good); }
+  .invite-row .status.used { color: var(--text-muted); }
+
+  #toastHost { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 50; }
+  .toast-bubble {
+    background: var(--ink-800); border: 1px solid var(--line-strong); border-radius: var(--radius-md);
+    padding: 11px 18px; margin-top: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    animation: toast-in 0.25s ease;
+  }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div id="authView">
+  <header class="site-header" style="max-width:none; padding:0 0 24px;">
+    <div class="brand"><span class="brand-mark"></span><span class="brand-name">Predict the Gank</span></div>
+    <div class="header-right">
+      <button id="themeToggleAuth" class="theme-toggle" type="button" aria-label="Toggle light/dark theme"></button>
+      <p class="signin-link faint mono" style="font-size:12px;"><a href="/">← Public tracker</a></p>
+    </div>
+  </header>
+  <div class="card auth-card">
+    <h1>Control console</h1>
+    <p class="muted" style="margin-bottom:20px;">Invite-only. Ask an admin for a code to join the roster.</p>
+
+    <div class="auth-tabs">
+      <button id="tabSignIn" class="active" type="button">Sign in</button>
+      <button id="tabRegister" type="button">Register</button>
+    </div>
+
+    <form id="signInPane" class="auth-pane active" autocomplete="on">
+      <div class="field-group">
+        <label for="siName">Call sign</label>
+        <input id="siName" name="name" placeholder="Your name" autocomplete="username">
+      </div>
+      <div class="field-group">
+        <label for="siPassword">Password</label>
+        <input id="siPassword" name="password" type="password" placeholder="8+ characters" autocomplete="current-password">
+      </div>
+      <button id="loginBtn" class="primary" type="submit">Sign in</button>
+    </form>
+
+    <form id="registerPane" class="auth-pane" autocomplete="on">
+      <p id="bootstrapNotice" class="badge amber" style="display:none; margin-bottom:16px;">No admin yet — you'll become the admin</p>
+      <div class="field-group">
+        <label for="regName">Call sign</label>
+        <input id="regName" name="name" placeholder="Your name" autocomplete="username">
+      </div>
+      <div class="field-group">
+        <label for="regPassword">Password</label>
+        <input id="regPassword" name="password" type="password" placeholder="8+ characters" autocomplete="new-password">
+      </div>
+      <div class="field-group" id="inviteFieldGroup">
+        <label for="regInvite">Invite code</label>
+        <input id="regInvite" name="invite" placeholder="12-character code" autocomplete="off">
+      </div>
+      <button id="registerBtn" class="primary" type="submit">Register</button>
+    </form>
+
+    <p id="authError" class="error-text" style="display:none; margin-top:14px;"></p>
+  </div>
+</div>
+
+<div id="appView">
+  <header class="site-header">
+    <div class="brand"><span class="brand-mark"></span><span class="brand-name">Predict the Gank</span></div>
+    <div class="whoami">
+      <button id="themeToggleApp" class="theme-toggle" type="button" aria-label="Toggle light/dark theme"></button>
+      <span class="pulse-dot"></span>
+      <span class="call-sign" id="whoamiText"></span>
+      <button id="logoutBtn" class="ghost" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="log-row">
+      <button id="logBtn" class="primary" type="button">Log sighting</button>
+      <button id="undoBtn" class="ghost" type="button">Undo mine</button>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="activity" type="button">Activity</button>
+      <button class="tab-btn" data-tab="log" type="button">Field log</button>
+      <button class="tab-btn" data-tab="team" type="button">Team</button>
+      <button class="tab-btn" data-tab="invites" id="invitesTabBtn" type="button" style="display:none">Invites</button>
+    </nav>
+
+    <section id="panel-activity" class="tab-panel active">
+      <div class="card">
+        <p class="section-title" style="font-family:var(--font-mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:14px;">Next predicted roam</p>
+        <p id="featuredTierLabel" class="badge amber" style="display:inline-flex;">Loading…</p>
+        <canvas id="countdownCanvas" style="width:100%; max-width:380px; height:110px; display:block; margin:6px 0 2px; cursor:default;" aria-hidden="true"></canvas>
+        <p id="countdownNow" class="mono" style="display:none; font-family:var(--font-display); font-size:28px; color:var(--status-bad); margin:6px 0 2px;">HAPPENING NOW</p>
+        <p id="countdownSr" class="sr-only" role="status" aria-live="polite">--:--:--</p>
+        <p id="windowLabel" class="mono muted" style="font-size:13px; margin-bottom:6px;"></p>
+        <p id="featuredDetail" class="muted" style="font-size:13px;"></p>
+        <div id="tierChips" class="tier-chips"></div>
+      </div>
+      <div style="margin-top:20px; padding-top:20px; border-top:1px solid var(--line);">
+        <p class="section-title" style="font-family:var(--font-mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;">Weekly activity pattern</p>
+        <p class="muted" style="font-size:12px; margin-bottom:14px;">Each cell = sightings logged in that hour, across every day recorded. Brighter = more often.</p>
+        <div class="heatgrid" id="heatmapGrid" aria-label="Sightings by day and hour"></div>
+        <div class="heat-legend">
+          <span class="faint mono" style="font-size:11px;">Fewer</span>
+          <span class="heat-legend-ramp"><span></span><span></span><span></span><span></span><span></span></span>
+          <span class="faint mono" style="font-size:11px;">More</span>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><span class="stat-value mono" id="totalStat">0</span><span class="stat-label">Logged sightings</span></div>
+          <div class="stat"><span class="stat-value mono" id="peakStat">—</span><span class="stat-label">Peak window</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-log" class="tab-panel">
+      <div class="card" style="padding:0;">
+        <div id="logList"></div>
+      </div>
+    </section>
+
+    <section id="panel-team" class="tab-panel">
+      <div class="card">
+        <div id="byPerson" class="row wrap" style="gap:8px;"></div>
+      </div>
+    </section>
+
+    <section id="panel-invites" class="tab-panel">
+      <div class="card">
+        <div class="row between" style="margin-bottom:14px;">
+          <p class="muted" style="font-size:13px;">Each code is single-use. Send it out of band (Slack DM, etc.)</p>
+          <button id="genInviteBtn" class="primary" type="button">New invite</button>
+        </div>
+        <div id="inviteList"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="tooltip" class="viz-tooltip" role="status"></div>
+<div id="toastHost" aria-live="polite"></div>
+
+<script type="importmap" nonce="%%CSP_NONCE%%">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="/timer3d.js"></script>
+<script src="/viz.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>
