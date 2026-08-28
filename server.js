@@ -9,6 +9,26 @@ const path = require('path');
 
 const authRoutes = require('./routes/auth');
 const sightingsRoutes = require('./routes/sightings');
+const { getWorkHours } = require('./services/work-hours');
+
+// COUNTDOWN_OVERRIDE_MS forces the hero countdown to a fixed starting value, in
+// milliseconds, so the states that only happen in the last minute of a window —
+// the red urgent pulse, the 1-minute and 30-second alerts — can be seen on
+// demand instead of by waiting for a real window to come round.
+//
+// Testing only, and deliberately loud about it: the boot log says so, and the
+// pages show a badge next to the countdown, because a page quietly displaying a
+// fabricated countdown is worse than no test tool at all.
+function getCountdownOverrideMs() {
+  const raw = process.env.COUNTDOWN_OVERRIDE_MS;
+  if (!raw) return null;
+  const ms = Number.parseInt(raw, 10);
+  if (!Number.isInteger(ms) || ms <= 0) {
+    console.warn(`COUNTDOWN_OVERRIDE_MS="${raw}" is not a positive integer — ignoring it.`);
+    return null;
+  }
+  return ms;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,20 +47,32 @@ app.use((req, res, next) => {
   next();
 });
 
-// Default CSP only allows scripts from 'self'; the 3D countdown (Three.js)
-// and confetti (lottie-web) libraries load from CDNs, so those origins need
-// an explicit allowance under script-src. The 3D countdown's font also gets
-// fetched at runtime (FontLoader's internal fetch()), which CSP governs
-// under connect-src, not script-src — that needs its own allowance or the
-// font request gets silently blocked even with script-src fixed. Everything
-// else stays on helmet's strict defaults.
+// Default CSP only allows scripts from 'self'; Tailwind, the 3D countdown
+// (Three.js) and the Lottie player all load from cdn.jsdelivr.net, so that one
+// origin needs an explicit allowance under script-src. It is the only CDN the
+// app uses — lottie-web moved off cdnjs when it switched to the svg-only build,
+// so cdnjs is no longer allowed here at all.
+//
+// cdn.jsdelivr.net is also allowed under connect-src, for one reason: source
+// maps. @tailwindcss/browser ends with a //# sourceMappingURL comment pointing
+// at cdn.jsdelivr.net/sm/<hash>.map, and a browser with devtools open fetches
+// it — a fetch, so connect-src governs it, not script-src. Without the
+// allowance every page load with devtools open logs a CSP violation for a file
+// that only exists to make a third-party library debuggable.
+//
+// This is a smaller concession than it looks: the same host is already trusted
+// to execute script here, which is strictly more power than being allowed to
+// answer a fetch. Nothing else the app does needs a cross-origin request — the
+// countdown's typeface was deliberately subsetted to our own origin (see
+// scripts/generate-timer-typeface.js) so it does not.
+//
+// Everything else stays on helmet's strict defaults.
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       'script-src': [
         "'self'",
-        'https://cdnjs.cloudflare.com',
         'https://cdn.jsdelivr.net',
         (req, res) => `'nonce-${res.locals.cspNonce}'`,
       ],
@@ -109,10 +141,14 @@ app.use('/api/sightings', sightingsRoutes);
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Public: lets the frontend render timestamps in the same timezone the server
-// buckets the heatmap in, instead of each viewer's own browser timezone (which
-// would disagree with the heatmap and could even show a different weekday).
+// buckets the heatmap in, and gate the "log a sighting" buttons on the office's
+// working day rather than each viewer's local clock.
 app.get('/api/config', (req, res) => {
-  res.json({ timezone: process.env.TIMEZONE || 'UTC' });
+  res.json({
+    timezone: process.env.TIMEZONE || 'UTC',
+    workHours: getWorkHours(),
+    countdownOverrideMs: getCountdownOverrideMs(),
+  });
 });
 
 app.use((err, req, res, next) => {
@@ -123,6 +159,11 @@ app.use((err, req, res, next) => {
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Predict the Gank server listening on port ${PORT}`);
+    const override = getCountdownOverrideMs();
+    if (override !== null) {
+      console.warn(`COUNTDOWN_OVERRIDE_MS=${override} is set — the countdown on both pages is FAKE `
+        + '(starts at that value and ticks to zero on load). Unset it for real predictions.');
+    }
   });
 }
 

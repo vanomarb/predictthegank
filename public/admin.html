@@ -5,215 +5,186 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Control Console — Predict the Gank</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230a1310' stroke='%23ffb648' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23ffb648'/%3E%3C/svg%3E">
+
+<!-- Same styling setup as index.html: tokens in shared.css, everything else a
+     Tailwind utility, tailwind-config.js before the browser build. See the
+     comment there for the reasoning. -->
 <link rel="stylesheet" href="/shared.css">
-<style>
-  .site-header { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; padding: 22px 20px 0; max-width: 760px; margin: 0 auto; }
-  .brand { display: flex; align-items: center; gap: 9px; }
-  .brand-mark { width: 9px; height: 9px; border-radius: 50%; background: var(--amber-400); box-shadow: 0 0 10px rgba(255,182,72,0.7); }
-  .brand-name { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-secondary); }
-  .header-right { display: flex; align-items: center; gap: 14px; }
-
-  @media (max-width: 380px) {
-    .brand-name { font-size: 11px; }
-    .whoami { flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-    .call-sign { font-size: 12px; }
-  }
-
-  .tier-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
-  .tier-chip {
-    display: flex; flex-direction: column; align-items: center; gap: 2px;
-    padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--line);
-    background: var(--ink-950); min-width: 76px;
-  }
-  .tier-chip .tc-label { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
-  .tier-chip .tc-time { font-family: var(--font-display); font-size: 17px; color: var(--text-primary); }
-  .tier-chip.is-featured { border-color: var(--amber-500); background: rgba(242, 169, 59, 0.08); }
-  .tier-chip.is-featured .tc-label { color: var(--amber-300); }
-  .tier-chip.is-passed { opacity: 0.45; }
-  .tier-chip.is-passed .tc-time { text-decoration: line-through; text-decoration-color: var(--text-muted); }
-  .tier-chip.is-wildcard { border-style: dashed; }
-  .tier-chip.is-wildcard .tc-time { font-size: 13px; }
-
-  /* ---- auth ---- */
-  #authView { max-width: 380px; margin: 14vh auto 0; padding: 0 20px; }
-  .auth-card h1 { font-size: 34px; margin-bottom: 4px; }
-  .field-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-  .field-group label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
-  .auth-tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--ink-950); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px; }
-  .auth-tabs button { flex: 1; background: transparent; border: none; padding: 8px; font-size: 13px; }
-  .auth-tabs button.active { background: var(--ink-700); }
-  .auth-pane { display: none; flex-direction: column; }
-  .auth-pane.active { display: flex; }
-
-  /* ---- dashboard ---- */
-  #appView { display: none; }
-  .whoami { display: flex; align-items: center; gap: 8px; }
-  .call-sign { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
-
-  .log-row { display: flex; gap: 10px; margin: 22px 0 6px; }
-  #logBtn {
-    flex: 1; padding: 20px; font-family: var(--font-display); font-size: 22px; letter-spacing: 0.04em;
-    position: relative; overflow: hidden;
-  }
-  #logBtn .ripple {
-    position: absolute; border-radius: 50%; background: rgba(23,17,10,0.35);
-    transform: scale(0); animation: ripple 0.6s ease-out forwards; pointer-events: none;
-  }
-  @keyframes ripple { to { transform: scale(3.2); opacity: 0; } }
-
-  .tabs { display: flex; gap: 4px; margin: 26px 0 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
-  .tabs button { background: transparent; border: none; border-radius: 0; padding: 9px 4px; margin-right: 18px; color: var(--text-muted); font-size: 13px; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
-  .tabs button.active { color: var(--text-primary); border-bottom-color: var(--amber-400); }
-  .tab-panel { display: none; }
-  .tab-panel.active { display: block; }
-
-  .stat-row { display: flex; gap: 28px; margin-top: 18px; flex-wrap: wrap; }
-  .stat { display: flex; flex-direction: column; gap: 2px; }
-  .stat-value { font-family: var(--font-display); font-size: 30px; }
-  .stat-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
-
-  #logList .entry { display: flex; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
-  #logList .entry:last-child { border-bottom: none; }
-  #logList .entry time { font-family: var(--font-mono); color: var(--text-primary); }
-
-  .person-pill { display: inline-flex; align-items: center; gap: 7px; background: var(--ink-800); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px 7px 8px; font-size: 13px; }
-  .person-pill .count { font-family: var(--font-mono); color: var(--amber-300); }
-
-  .invite-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 13px; }
-  .invite-row:last-child { border-bottom: none; }
-  .invite-row .code { color: var(--text-primary); letter-spacing: 0.03em; }
-  .invite-row .status.unused { color: var(--status-good); }
-  .invite-row .status.used { color: var(--text-muted); }
-
-  #toastHost { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 50; }
-  .toast-bubble {
-    background: var(--ink-800); border: 1px solid var(--line-strong); border-radius: var(--radius-md);
-    padding: 11px 18px; margin-top: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    animation: toast-in 0.25s ease;
-  }
-  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-</style>
+<script src="/tailwind-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 </head>
-<body>
 
-<div id="authView">
-  <header class="site-header" style="max-width:none; padding:0 0 24px;">
-    <div class="brand"><span class="brand-mark"></span><span class="brand-name">Predict the Gank</span></div>
-    <div class="header-right">
-      <button id="themeToggleAuth" class="theme-toggle" type="button" aria-label="Toggle light/dark theme"></button>
-      <p class="signin-link faint mono" style="font-size:12px;"><a href="/">← Public tracker</a></p>
+<body class="bg-ink-950 text-fg transition-colors duration-200">
+
+<div id="authView" class="mx-auto mt-[14vh] max-w-[380px] px-5">
+  <header class="flex flex-wrap items-center justify-between gap-2.5 pb-6">
+    <div class="flex items-center gap-[9px]">
+      <span class="size-[9px] rounded-full bg-amber-400 shadow-[0_0_10px_rgba(255,182,72,0.7)]"></span>
+      <span class="text-[13px] uppercase tracking-[0.1em] text-fg-muted max-[380px]:text-[11px]">Predict the Gank</span>
+    </div>
+    <div class="flex items-center gap-[14px]">
+      <button id="themeToggleAuth" type="button" aria-label="Toggle light/dark theme"
+              class="inline-flex size-[34px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"></button>
+      <p class="text-xs text-fg-faint">
+        <a href="/" class="inline-flex items-center gap-[0.45em] text-fg-muted hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"><span data-icon="arrow-left"></span> back</a>
+      </p>
     </div>
   </header>
-  <div class="card auth-card">
-    <h1>Control console</h1>
-    <p class="muted" style="margin-bottom:20px;">Invite-only. Ask an admin for a code to join the roster.</p>
 
-    <div class="auth-tabs">
-      <button id="tabSignIn" class="active" type="button">Sign in</button>
-      <button id="tabRegister" type="button">Register</button>
+  <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
+    <h1 class="mb-1 text-[34px] font-semibold tracking-[-0.015em]">Control console</h1>
+    <p class="mb-5 text-sm text-fg-muted">Invite-only. Ask an admin for a code to join the roster.</p>
+
+    <!-- data-active marks the selected tab / visible pane. An attribute rather
+         than a class so the selector outranks the base utilities. -->
+    <div class="mb-5 flex gap-1 rounded-md border border-line bg-ink-950 p-[3px]">
+      <button id="tabSignIn" type="button" data-active
+              class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Sign in</button>
+      <button id="tabRegister" type="button"
+              class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Register</button>
     </div>
 
-    <form id="signInPane" class="auth-pane active" autocomplete="on">
-      <div class="field-group">
-        <label for="siName">Call sign</label>
-        <input id="siName" name="name" placeholder="Your name" autocomplete="username">
+    <form id="signInPane" autocomplete="on" data-active class="hidden flex-col data-active:flex">
+      <div class="mb-3.5 flex flex-col gap-1.5">
+        <label for="siName" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Call sign</label>
+        <input id="siName" name="name" placeholder="Your name" autocomplete="username"
+               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <div class="field-group">
-        <label for="siPassword">Password</label>
-        <input id="siPassword" name="password" type="password" placeholder="8+ characters" autocomplete="current-password">
+      <div class="mb-3.5 flex flex-col gap-1.5">
+        <label for="siPassword" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Password</label>
+        <input id="siPassword" name="password" type="password" placeholder="8+ characters" autocomplete="current-password"
+               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <button id="loginBtn" class="primary" type="submit">Sign in</button>
+      <button id="loginBtn" type="submit"
+              class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">Sign in</button>
     </form>
 
-    <form id="registerPane" class="auth-pane" autocomplete="on">
-      <p id="bootstrapNotice" class="badge amber" style="display:none; margin-bottom:16px;">No admin yet — you'll become the admin</p>
-      <div class="field-group">
-        <label for="regName">Call sign</label>
-        <input id="regName" name="name" placeholder="Your name" autocomplete="username">
+    <form id="registerPane" autocomplete="on" class="hidden flex-col data-active:flex">
+      <p id="bootstrapNotice" style="display:none;"
+         class="mb-4 inline-flex items-center gap-1.5 rounded-full border border-[rgba(242,169,59,0.4)] bg-[rgba(242,169,59,0.1)] px-[9px] py-1 text-[11px] uppercase tracking-[0.08em] text-amber-300">No admin yet — you'll become the admin</p>
+      <div class="mb-3.5 flex flex-col gap-1.5">
+        <label for="regName" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Call sign</label>
+        <input id="regName" name="name" placeholder="Your name" autocomplete="username"
+               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <div class="field-group">
-        <label for="regPassword">Password</label>
-        <input id="regPassword" name="password" type="password" placeholder="8+ characters" autocomplete="new-password">
+      <div class="mb-3.5 flex flex-col gap-1.5">
+        <label for="regPassword" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Password</label>
+        <input id="regPassword" name="password" type="password" placeholder="8+ characters" autocomplete="new-password"
+               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <div class="field-group" id="inviteFieldGroup">
-        <label for="regInvite">Invite code</label>
-        <input id="regInvite" name="invite" placeholder="12-character code" autocomplete="off">
+      <div class="mb-3.5 flex flex-col gap-1.5" id="inviteFieldGroup">
+        <label for="regInvite" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Invite code</label>
+        <input id="regInvite" name="invite" placeholder="12-character code" autocomplete="off"
+               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <button id="registerBtn" class="primary" type="submit">Register</button>
+      <button id="registerBtn" type="submit"
+              class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">Register</button>
     </form>
 
-    <p id="authError" class="error-text" style="display:none; margin-top:14px;"></p>
+    <p id="authError" class="mt-3.5 text-[13px] text-bad" style="display:none;"></p>
   </div>
 </div>
 
-<div id="appView">
-  <header class="site-header">
-    <div class="brand"><span class="brand-mark"></span><span class="brand-name">Predict the Gank</span></div>
-    <div class="whoami">
-      <button id="themeToggleApp" class="theme-toggle" type="button" aria-label="Toggle light/dark theme"></button>
-      <span class="pulse-dot"></span>
-      <span class="call-sign" id="whoamiText"></span>
-      <button id="logoutBtn" class="ghost" type="button">Sign out</button>
+<div id="appView" style="display:none;">
+  <header class="mx-auto flex w-full max-w-[760px] flex-wrap items-center justify-between gap-2.5 px-5 pt-[22px]">
+    <div class="flex items-center gap-[9px]">
+      <span class="size-[9px] rounded-full bg-amber-400 shadow-[0_0_10px_rgba(255,182,72,0.7)]"></span>
+      <span class="text-[13px] uppercase tracking-[0.1em] text-fg-muted max-[380px]:text-[11px]">Predict the Gank</span>
+    </div>
+    <div class="flex items-center gap-2 max-[380px]:flex-wrap max-[380px]:justify-end max-[380px]:gap-1.5">
+      <button id="notifyToggle" type="button" aria-label="Turn on roam alerts" aria-pressed="false"
+              class="inline-flex size-[34px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-amber-500 aria-pressed:text-amber-300"></button>
+      <button id="themeToggleApp" type="button" aria-label="Toggle light/dark theme"
+              class="inline-flex size-[34px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"></button>
+      <span class="inline-block size-[7px] animate-pulse-ring rounded-full bg-good"></span>
+      <span id="whoamiText" class="text-[13px] tabular-nums text-fg-muted max-[380px]:text-xs"></span>
+      <button id="logoutBtn" type="button"
+              class="cursor-pointer rounded-md border border-line bg-transparent px-[18px] py-3 text-sm font-semibold text-fg-muted transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Sign out</button>
     </div>
   </header>
 
-  <main class="container">
-    <div class="log-row">
-      <button id="logBtn" class="primary" type="button">Log sighting</button>
-      <button id="undoBtn" class="ghost" type="button">Undo mine</button>
+  <main class="mx-auto w-full max-w-[760px] px-5 pt-7 pb-16">
+    <div class="mt-[22px] mb-1.5 flex gap-2.5">
+      <!-- data-closed is set by admin.js outside work hours -->
+      <button id="logBtn" type="button"
+              class="relative flex flex-1 cursor-pointer items-center justify-center gap-[0.45em] overflow-hidden rounded-md border border-amber-500 bg-amber-500 p-5 text-[18px] font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-amber-500 disabled:hover:bg-amber-500 disabled:active:scale-100 data-closed:border-dashed data-closed:border-line data-closed:bg-ink-800 data-closed:text-fg-faint data-closed:opacity-100 data-closed:hover:border-line data-closed:hover:bg-ink-800">
+        <span id="logBtnIcon" data-icon="eye"></span><span id="logBtnLabel">Log sighting</span>
+      </button>
+      <button id="undoBtn" type="button"
+              class="cursor-pointer rounded-md border border-line bg-transparent px-[18px] py-3 text-sm font-semibold text-fg-muted transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Undo mine</button>
     </div>
 
-    <nav class="tabs">
-      <button class="tab-btn active" data-tab="activity" type="button">Activity</button>
-      <button class="tab-btn" data-tab="log" type="button">Field log</button>
-      <button class="tab-btn" data-tab="team" type="button">Team</button>
-      <button class="tab-btn" data-tab="invites" id="invitesTabBtn" type="button" style="display:none">Invites</button>
+    <p id="logHint" class="mt-[-6px] mb-[18px] text-xs tabular-nums text-fg-faint"></p>
+
+    <nav class="mt-[26px] mb-4 flex gap-1 overflow-x-auto border-b border-line">
+      <button data-tab="activity" type="button" data-active
+              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Activity</button>
+      <button data-tab="log" type="button"
+              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Field log</button>
+      <button data-tab="team" type="button"
+              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Team</button>
+      <button data-tab="invites" id="invitesTabBtn" type="button" style="display:none"
+              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Invites</button>
     </nav>
 
-    <section id="panel-activity" class="tab-panel active">
-      <div class="card">
-        <p class="section-title" style="font-family:var(--font-mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:14px;">Next predicted roam</p>
-        <p id="featuredTierLabel" class="badge amber" style="display:inline-flex;">Loading…</p>
-        <canvas id="countdownCanvas" style="width:100%; max-width:380px; height:110px; display:block; margin:6px 0 2px; cursor:default;" aria-hidden="true"></canvas>
-        <p id="countdownNow" class="mono" style="display:none; font-family:var(--font-display); font-size:28px; color:var(--status-bad); margin:6px 0 2px;">HAPPENING NOW</p>
+    <section id="panel-activity" data-active class="hidden data-active:block">
+      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
+        <p class="mb-3.5 text-xs uppercase tracking-[0.12em] text-fg-faint">Next predicted roam</p>
+        <p id="featuredTierLabel"
+           class="inline-flex items-center gap-1.5 rounded-full border border-[rgba(242,169,59,0.4)] bg-[rgba(242,169,59,0.1)] px-[9px] py-1 text-[11px] uppercase tracking-[0.08em] text-amber-300">Loading…</p>
+        <canvas id="countdownCanvas" aria-hidden="true"
+                class="my-1.5 block h-40 w-full max-w-[560px] cursor-default touch-none [-webkit-tap-highlight-color:transparent]"></canvas>
+        <p id="countdownNow" style="display:none;"
+           class="my-1.5 animate-pulse-text text-[22px] font-bold tabular-nums tracking-[-0.01em] text-bad">HAPPENING NOW</p>
         <p id="countdownSr" class="sr-only" role="status" aria-live="polite">--:--:--</p>
-        <p id="windowLabel" class="mono muted" style="font-size:13px; margin-bottom:6px;"></p>
-        <p id="featuredDetail" class="muted" style="font-size:13px;"></p>
-        <div id="tierChips" class="tier-chips"></div>
+        <p id="countdownOverrideNote" style="display:none;" class="inline-flex items-center gap-1.5 rounded-full border border-dashed border-amber-500 bg-[rgba(242,169,59,0.1)] px-[9px] py-1 text-[11px] uppercase tracking-[0.08em] text-amber-300"></p>
+        <p id="windowLabel" class="mb-1.5 text-[13px] tabular-nums text-fg-muted"></p>
+        <p id="featuredDetail" class="text-[13px] text-fg-muted"></p>
+        <div id="tierChips" class="mt-3.5 flex flex-wrap gap-2"></div>
       </div>
-      <div style="margin-top:20px; padding-top:20px; border-top:1px solid var(--line);">
-        <p class="section-title" style="font-family:var(--font-mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;">Weekly activity pattern</p>
-        <p class="muted" style="font-size:12px; margin-bottom:14px;">Each cell = sightings logged in that hour, across every day recorded. Brighter = more often.</p>
-        <div class="heatgrid" id="heatmapGrid" aria-label="Sightings by day and hour"></div>
-        <div class="heat-legend">
-          <span class="faint mono" style="font-size:11px;">Fewer</span>
-          <span class="heat-legend-ramp"><span></span><span></span><span></span><span></span><span></span></span>
-          <span class="faint mono" style="font-size:11px;">More</span>
+
+      <div class="mt-5 border-t border-line pt-5">
+        <p class="mb-1.5 text-xs uppercase tracking-[0.12em] text-fg-faint">Weekly activity pattern</p>
+        <p class="mb-3.5 text-xs text-fg-muted">Each cell = sightings logged in that hour, across every day recorded. Brighter = more often.</p>
+        <div id="heatmapGrid" class="grid w-full grid-cols-[34px_repeat(24,1fr)] gap-0.5" aria-label="Sightings by day and hour"></div>
+        <div class="mt-3.5 flex items-center gap-2">
+          <span class="text-[11px] tabular-nums text-fg-faint">Fewer</span>
+          <span class="flex h-2.5 w-[90px] overflow-hidden rounded-sm">
+            <span class="flex-1 bg-heat-1"></span><span class="flex-1 bg-heat-2"></span><span class="flex-1 bg-heat-3"></span><span class="flex-1 bg-heat-4"></span><span class="flex-1 bg-heat-5"></span>
+          </span>
+          <span class="text-[11px] tabular-nums text-fg-faint">More</span>
         </div>
-        <div class="stat-row">
-          <div class="stat"><span class="stat-value mono" id="totalStat">0</span><span class="stat-label">Logged sightings</span></div>
-          <div class="stat"><span class="stat-value mono" id="peakStat">—</span><span class="stat-label">Peak window</span></div>
+        <div class="mt-[18px] flex flex-wrap gap-7">
+          <div class="flex flex-col gap-0.5">
+            <span id="totalStat" class="text-[28px] font-semibold tabular-nums tracking-[-0.01em]">0</span>
+            <span class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Logged sightings</span>
+          </div>
+          <div class="flex flex-col gap-0.5">
+            <span id="peakStat" class="text-[28px] font-semibold tabular-nums tracking-[-0.01em]">—</span>
+            <span class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Peak window</span>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="panel-log" class="tab-panel">
-      <div class="card" style="padding:0;">
+    <section id="panel-log" class="hidden data-active:block">
+      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))]">
         <div id="logList"></div>
       </div>
     </section>
 
-    <section id="panel-team" class="tab-panel">
-      <div class="card">
-        <div id="byPerson" class="row wrap" style="gap:8px;"></div>
+    <section id="panel-team" class="hidden data-active:block">
+      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
+        <div id="byPerson" class="flex flex-wrap items-center gap-2"></div>
       </div>
     </section>
 
-    <section id="panel-invites" class="tab-panel">
-      <div class="card">
-        <div class="row between" style="margin-bottom:14px;">
-          <p class="muted" style="font-size:13px;">Each code is single-use. Send it out of band (Slack DM, etc.)</p>
-          <button id="genInviteBtn" class="primary" type="button">New invite</button>
+    <section id="panel-invites" class="hidden data-active:block">
+      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
+        <div class="mb-3.5 flex items-center justify-between gap-2.5">
+          <p class="text-[13px] text-fg-muted">Each code is single-use. Send it out of band (Slack DM, etc.)</p>
+          <button id="genInviteBtn" type="button"
+                  class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">New invite</button>
         </div>
         <div id="inviteList"></div>
       </div>
@@ -221,8 +192,13 @@
   </main>
 </div>
 
-<div id="tooltip" class="viz-tooltip" role="status"></div>
-<div id="toastHost" aria-live="polite"></div>
+<div id="tooltip" role="status"
+     class="pointer-events-none fixed z-40 max-w-[min(280px,calc(100vw-16px))] translate-y-0.5 rounded-md border border-line-strong bg-ink-950 px-2.5 py-1.5 text-xs text-fg opacity-0 transition-opacity duration-100 data-visible:opacity-100"></div>
+<!-- Toasts sit at the top, clear of the header rather than over it: the fire
+     effect rises well above each bubble and needs the room, and this also keeps
+     a toast off the bell and theme controls. pointer-events-none in case one
+     ever does overlap them — nothing in a toast is interactive. -->
+<div id="toastHost" class="pointer-events-none fixed top-[88px] left-1/2 z-50 -translate-x-1/2" aria-live="polite"></div>
 
 <script type="importmap" nonce="%%CSP_NONCE%%">
 {
@@ -233,6 +209,7 @@
 }
 </script>
 <script type="module" src="/timer3d.js"></script>
+<script src="/icons.js"></script>
 <script src="/viz.js"></script>
 <script src="/admin.js"></script>
 </body>

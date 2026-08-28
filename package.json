@@ -8,7 +8,13 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:confetti": "node scripts/generate-confetti-lottie.js",
+    "build:miss": "node scripts/generate-miss-lottie.js",
+    "build:fire": "node scripts/generate-fire-lottie.js",
+    "build:marks": "node scripts/generate-mark-lottie.js",
+    "build:page-confetti": "node scripts/generate-page-confetti-lottie.js",
+    "build:typeface": "node scripts/generate-timer-typeface.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
@@ -19,5 +25,9 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "opentype.js": "^2.0.0",
+    "playwright": "^1.62.1"
   }
 }
