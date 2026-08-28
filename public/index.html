@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HR visit tracker</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  button { padding: 10px 16px; border-radius: 8px; border: 1px solid #ccc; background: #f5f5f4; cursor: pointer; font-size: 14px; }
+  button:hover { background: #eceae5; }
+  input { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; font-size: 14px; }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .muted { color: #71716c; font-size: 13px; }
+  .card { background: #f7f6f2; border-radius: 10px; padding: 16px; margin-bottom: 24px; }
+  .error { color: #a32d2d; font-size: 13px; }
+  table.heatmap { border-collapse: collapse; font-size: 11px; }
+  table.heatmap td { width: 16px; height: 16px; border-radius: 2px; }
+  #logList div { padding: 8px 12px; border-bottom: 1px solid #e5e4df; font-size: 13px; display: flex; justify-content: space-between; }
+  .pill { background: #f7f6f2; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="authView">
+  <h2>HR visit tracker</h2>
+  <p class="muted">Invite-only. Ask an admin for a code to register.</p>
+  <div class="row"><input id="nameInput" placeholder="Name" style="flex:1"></div>
+  <div class="row"><input id="passwordInput" type="password" placeholder="Password (8+ chars)" style="flex:1"></div>
+  <div class="row"><input id="inviteInput" placeholder="Invite code (registration only)" style="flex:1"></div>
+  <p id="authError" class="error" style="display:none"></p>
+  <div class="row">
+    <button id="loginBtn">Log in</button>
+    <button id="registerBtn">Register with invite</button>
+  </div>
+</div>
+
+<div id="appView" style="display:none">
+  <div class="row" style="justify-content: space-between; align-items: center;">
+    <h2 style="margin:0">HR visit tracker</h2>
+    <button id="logoutBtn">Log out</button>
+  </div>
+  <p class="muted" id="whoami"></p>
+
+  <div class="row">
+    <button id="logBtn" style="flex:1; font-weight:600;">Log HR sighting now</button>
+    <button id="undoBtn">Undo mine</button>
+  </div>
+  <p id="statusMsg" class="muted" style="display:none"></p>
+
+  <div class="card">
+    <p class="muted" style="margin:0 0 4px">Prediction</p>
+    <p id="predictionText" style="margin:0">Loading...</p>
+  </div>
+
+  <p class="muted">Visit heatmap (day x hour)</p>
+  <div id="heatmap" style="overflow-x:auto; margin-bottom:24px"></div>
+
+  <p class="muted">Logged by</p>
+  <div id="byPerson" class="row" style="flex-wrap:wrap; margin-bottom:24px"></div>
+
+  <div id="adminPanel" style="display:none" class="card">
+    <p style="margin:0 0 8px; font-weight:600;">Admin: invites</p>
+    <button id="genInviteBtn">Generate invite code</button>
+    <div id="inviteList" style="margin-top:12px"></div>
+  </div>
+
+  <p class="muted">Log (<span id="countLabel">0</span>)</p>
+  <div id="logList" style="border:1px solid #e5e4df; border-radius:8px; max-height:220px; overflow-y:auto"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
