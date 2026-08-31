@@ -262,10 +262,11 @@
   // Written on every tick rather than only on a poll, because the moment the
   // clock points at changes between polls.
   function renderNextLabels(next) {
-    const { moment, window: w } = next;
+    const { moment, window: w, dayLabel } = next;
     const pct = typeof moment.pct === 'number' ? ` · ${moment.pct}%` : '';
-    featuredTierLabel.textContent = `Next predicted roam${w.dayLabel ? ` · ${w.dayLabel}` : ''}`;
-    windowLabel.textContent = `${moment.targetLabel}${w.dayLabel ? ` ${w.dayLabel}` : ''}`
+    const day = dayLabel ? ` ${dayLabel}` : '';
+    featuredTierLabel.textContent = `Next predicted roam${dayLabel ? ` · ${dayLabel}` : ''}`;
+    windowLabel.textContent = `${moment.targetLabel}${day}`
       + ` · ${moment.label}${pct} · ${moment.tier === 'wildcard'
         ? `between ${w.timeLabel} and the next phase`
         : `in ${w.timeLabel}`}`;

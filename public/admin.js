@@ -324,9 +324,9 @@
     const next = Tracker.nextMoment(phases, timeZone, workHours);
     if (!next) return;
     if (next.window !== featured) featured = next.window;
-    const { moment, window: w } = next;
+    const { moment, window: w, dayLabel } = next;
     const pct = typeof moment.pct === 'number' ? ` · ${moment.pct}%` : '';
-    el('windowLabel').textContent = `${moment.targetLabel}${w.dayLabel ? ` ${w.dayLabel}` : ''}`
+    el('windowLabel').textContent = `${moment.targetLabel}${dayLabel ? ` ${dayLabel}` : ''}`
       + ` · ${moment.label}${pct} · ${w.timeLabel}`;
 
     // The override wins over "happening now" — see the note in public.js.

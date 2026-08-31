@@ -380,7 +380,26 @@ const Tracker = (() => {
   // count down to is one it does not really expect.
   function allMoments(windows) {
     return (windows || [])
-      .flatMap((w) => (w.tiers || []).map((moment) => ({ moment, window: w })))
+      .flatMap((w) => {
+        // A window with no tiers is one from a server that predates them (or a
+        // fixture built straight for classifyWindows). It still has to yield a
+        // moment, or the countdown and the day label have nothing to aim at —
+        // normalizeWindows degrades the same way, and the two must agree.
+        if (!Array.isArray(w.tiers) || w.tiers.length === 0) {
+          const sec = windowTargetSec(w);
+          return [{
+            moment: {
+              tier: w.tier || 'sure',
+              label: TIER_LABEL[w.tier] || 'Sure',
+              pct: null,
+              targetSec: sec,
+              targetLabel: hourMinuteLabel(Math.floor(sec / 3600), Math.floor((sec % 3600) / 60)),
+            },
+            window: w,
+          }];
+        }
+        return w.tiers.map((moment) => ({ moment, window: w }));
+      })
       .sort((a, b) => a.moment.targetSec - b.moment.targetSec);
   }
 
@@ -390,11 +409,27 @@ const Tracker = (() => {
   // all — it rolls to the earliest, which secondsUntilTarget will place on the
   // next work day.
   //
-  // Returns { moment, window, now } or null when nothing is predicted.
+  // Returns { moment, window, now, dayOffset, dayLabel } or null when nothing is
+  // predicted.
+  //
+  // The day label is computed HERE, from the same target the countdown uses,
+  // rather than being read off the featured window. The window's copy is written
+  // once per five-second poll while the moment being counted to can change
+  // between polls, so at 16:40 the page showed "9:12am" over a countdown of
+  // 16h32m — the clock had rolled on to tomorrow's first moment and the label
+  // was still describing the last one. One target, one answer, every tick.
   function nextMoment(windows, timeZone, workHours) {
     const all = allMoments(windows);
     if (all.length === 0) return null;
-    if (!isWorkDay(currentDayInTZ(timeZone), workHours)) return { ...all[0], now: false };
+
+    const label = (entry, now) => {
+      const dayOffset = now
+        ? 0
+        : daysUntilTargetSec(entry.moment.targetSec, timeZone, workHours);
+      return { ...entry, now, dayOffset, dayLabel: dayOffsetLabel(dayOffset, timeZone) };
+    };
+
+    if (!isWorkDay(currentDayInTZ(timeZone), workHours)) return label(all[0], false);
 
     const { hour, minute, second } = localTimeParts(timeZone);
     const nowSec = hour * 3600 + minute * 60 + second;
@@ -403,10 +438,10 @@ const Tracker = (() => {
     // rather than counting down to the next one.
     const current = all.find((x) => nowSec >= x.moment.targetSec
       && nowSec < x.moment.targetSec + 60);
-    if (current) return { ...current, now: true };
+    if (current) return label(current, true);
 
     const ahead = all.find((x) => x.moment.targetSec > nowSec);
-    return { ...(ahead || all[0]), now: false };
+    return label(ahead || all[0], false);
   }
 
   function windowLabel(w) {
@@ -592,13 +627,15 @@ const Tracker = (() => {
     if (featuredIndex === -1) featuredIndex = 0;
 
     const featured = classified[featuredIndex];
-    // A window that is happening RIGHT NOW is today's, however its start hour
-    // compares to the clock: daysUntilWindow looks for the next time the window
-    // OPENS, which is tomorrow once the current one is under way. Labelling it
-    // "· tomorrow" while the page says HAPPENING NOW would be nonsense.
-    const dayOffset = !featured || featured.active
-      ? 0
-      : daysUntilTargetSec(windowTargetSec(featured), timeZone, workHours);
+    // Which DAY the label says, measured from the moment the countdown is
+    // actually pointing at — not from the phase's sure moment.
+    //
+    // Taking it from the sure moment produced a label that contradicted the
+    // clock beside it: at 9:55, with the 9:12 sure moment behind us, "the next
+    // 9:12" is tomorrow, so the page read "10:35am tomorrow" over a countdown
+    // of forty minutes. One target has to feed both, or they disagree the moment
+    // a phase’s first prediction passes.
+    const dayOffset = upcoming ? upcoming.dayOffset : 0;
     const dayLabel = dayOffsetLabel(dayOffset, timeZone);
 
     return classified.map((w, i) => (i === featuredIndex
