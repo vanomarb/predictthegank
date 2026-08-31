@@ -709,6 +709,14 @@ const Tracker = (() => {
     try { return await Notification.requestPermission(); } catch (e) { return Notification.permission; }
   }
 
+  // The app's own mark, the same file the browser tab uses.
+  //
+  // This was an inlined data URI of the OLD favicon — the amber circle — and it
+  // was missed when the favicon became the target logo, so desktop alerts went
+  // on showing a mark that appears nowhere else in the app. Pointing at the file
+  // costs one cached same-origin request and cannot drift from the tab again.
+  const NOTIFY_ICON = '/favicon.png';
+
   // tag: replaces an earlier notification with the same tag instead of stacking,
   // so a 60s warning is superseded by the 30s one rather than piling up.
   function notify(title, body, tag) {
@@ -720,9 +728,6 @@ const Tracker = (() => {
       return false; // some browsers throw outside a service worker; the toast still fires
     }
   }
-
-  // The favicon, inline, so a notification is recognisable without another request.
-  const NOTIFY_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230a1310' stroke='%23ffb648' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23ffb648'/%3E%3C/svg%3E";
 
   // Wires the bell button(s). Clicking asks for permission the first time, then
   // toggles. onChange is called with the new state so the page can say so.
