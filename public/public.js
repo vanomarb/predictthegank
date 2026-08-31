@@ -97,11 +97,13 @@
     const lottie = Tracker.lottieLib();
     if (!mount || !lottie) return null; // leaves the static fallback icon in place
     mount.innerHTML = '';
-    // Deliberately NOT looped. The mark draws itself on and holds: a tick that
-    // keeps re-drawing reads as a spinner, i.e. as if something were still
-    // loading. The celebration is the full-page layer instead.
+    // Looped. The mark used to draw itself on once and hold, on the theory that a
+    // re-drawing tick reads as a spinner; in practice the modal sits open until
+    // it is dismissed, and a still frame under a heading makes the panel look
+    // like a screenshot of itself. The page-wide layer behind it stays one-shot
+    // — confetti that never stops is a different problem.
     return lottie.loadAnimation({
-      container: mount, renderer: 'svg', loop: false, autoplay: true, path,
+      container: mount, renderer: 'svg', loop: true, autoplay: true, path,
     });
   }
 

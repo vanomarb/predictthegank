@@ -15,7 +15,8 @@
     "build:marks": "node scripts/generate-mark-lottie.js",
     "build:page-confetti": "node scripts/generate-page-confetti-lottie.js",
     "build:typeface": "node scripts/generate-timer-typeface.js",
-    "build:logo": "node scripts/generate-logo.js"
+    "build:logo": "node scripts/generate-logo.js",
+    "sighting": "node scripts/add-sighting.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

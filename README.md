@@ -32,6 +32,13 @@ Node/Express + SQLite backend, plain JS frontend, no public sign-up.
   the 12-glyph Poppins subset the 3D countdown extrudes (`npm run build:typeface`).
   Needs the `opentype.js` devDependency and network access; the output is
   committed, so a plain deploy never runs it.
+- `scripts/add-sighting.js` — records sightings at specific times
+  (`node scripts/add-sighting.js 9:37am 2:09pm`), for seeding and for checking the
+  page against known data. The "I see them" button can only log the current
+  minute; this does the same insert at a time you name, on the `TIMEZONE` clock.
+  Takes `--date YYYY-MM-DD` and `--dry-run` (which touches no database at all).
+  Attributed to a "Seeded" system account, so per-person attribution does not
+  claim a real person witnessed them
 - `scripts/init-admin.js` — one-time bootstrap to get your first invite code
 
 ## Local setup
