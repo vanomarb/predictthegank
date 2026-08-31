@@ -370,6 +370,45 @@ const Tracker = (() => {
       }));
   }
 
+  // Every predicted moment of the day, in clock order, each still knowing which
+  // phase it belongs to.
+  //
+  // The countdown used to run to the SURE moment of the next phase and nothing
+  // else, which meant the page went quiet for the other three-quarters of what
+  // it had predicted: a likely roam at 9:38 got no countdown and no alert, even
+  // though the card was sitting there naming it. A prediction the app will not
+  // count down to is one it does not really expect.
+  function allMoments(windows) {
+    return (windows || [])
+      .flatMap((w) => (w.tiers || []).map((moment) => ({ moment, window: w })))
+      .sort((a, b) => a.moment.targetSec - b.moment.targetSec);
+  }
+
+  // The moment the countdown should be pointing at: the one happening right now
+  // if the clock is inside a predicted minute, otherwise the next one ahead of
+  // it. Once the day's moments are all behind us — or it is not a work day at
+  // all — it rolls to the earliest, which secondsUntilTarget will place on the
+  // next work day.
+  //
+  // Returns { moment, window, now } or null when nothing is predicted.
+  function nextMoment(windows, timeZone, workHours) {
+    const all = allMoments(windows);
+    if (all.length === 0) return null;
+    if (!isWorkDay(currentDayInTZ(timeZone), workHours)) return { ...all[0], now: false };
+
+    const { hour, minute, second } = localTimeParts(timeZone);
+    const nowSec = hour * 3600 + minute * 60 + second;
+
+    // Inside a predicted minute: that IS the moment, and the page should say so
+    // rather than counting down to the next one.
+    const current = all.find((x) => nowSec >= x.moment.targetSec
+      && nowSec < x.moment.targetSec + 60);
+    if (current) return { ...current, now: true };
+
+    const ahead = all.find((x) => x.moment.targetSec > nowSec);
+    return { ...(ahead || all[0]), now: false };
+  }
+
   function windowLabel(w) {
     if (w.tiers === undefined && w.minute !== undefined) return hourMinuteLabel(w.hourStart, w.minute);
     return w.hourStart === w.hourEnd ? hourLabel(w.hourStart) : `${hourLabel(w.hourStart)}–${hourLabel(w.hourEnd)}`;
@@ -481,13 +520,6 @@ const Tracker = (() => {
     return secondsUntilTarget((hourStart % 24) * 3600, timeZone, workHours);
   }
 
-  // What the countdown actually runs on: the seconds until the window's exact
-  // predicted moment, not the top of its hour. Counting to 9:00 while the page
-  // says 9:34 would be the display and the clock disagreeing in public.
-  function secondsUntilPrediction(w, timeZone, workHours) {
-    return secondsUntilTarget(windowTargetSec(w), timeZone, workHours);
-  }
-
   // '' for today, 'tomorrow' for +1, otherwise the weekday name.
   function dayOffsetLabel(offset, timeZone) {
     if (offset <= 0) return '';
@@ -548,10 +580,15 @@ const Tracker = (() => {
       passed: todayIsWorkDay && nowSec >= w.hourEnd * 3600,
       active: todayIsWorkDay && nowSec >= windowTargetSec(w) && nowSec < w.hourEnd * 3600,
     }));
-    // The next phase that has not closed. There is no tier filter any more:
-    // every phase carries all four tiers now, so "which window can be featured"
-    // is purely a question about the time of day.
-    let featuredIndex = classified.findIndex((w) => !w.passed);
+    // The phase that owns the next predicted moment — not simply the next phase
+    // that has not closed. The two differ for a wildcard: it belongs to a phase
+    // but lands after that phase's range, so once the 9-10 range closes its
+    // 10:35 wildcard is still the next thing predicted while the 11am phase is
+    // the next unclosed one. Featuring the phase the countdown is actually
+    // pointing at keeps the card, the headline and the clock telling one story.
+    const upcoming = nextMoment(classified, timeZone, workHours);
+    let featuredIndex = upcoming ? classified.indexOf(upcoming.window) : -1;
+    if (featuredIndex === -1) featuredIndex = classified.findIndex((w) => !w.passed);
     if (featuredIndex === -1) featuredIndex = 0;
 
     const featured = classified[featuredIndex];
@@ -709,12 +746,16 @@ const Tracker = (() => {
   // window starts with a clean slate.
   const ALERT_THRESHOLDS_S = [60, 30];
 
+  // Keyed on the MOMENT, so every predicted time gets its own pair of alerts.
+  // Keyed on the window it used to mean one phase raised one warning however
+  // many times it said HR might appear.
   function createCountdownAlerter(onAlert) {
     let key = null;
     let fired = new Set();
-    return function check(featured, secondsLeft) {
-      if (!featured || featured.active) return;
-      const next = featured.tier + '@' + featured.hourStart + '+' + (featured.dayOffset || 0);
+    return function check(entry, secondsLeft) {
+      if (!entry || !entry.moment || entry.now) return;
+      const { moment, window: w } = entry;
+      const next = `${w.hourStart}@${moment.tier}@${moment.targetSec}+${w.dayOffset || 0}`;
       if (next !== key) { key = next; fired = new Set(); }
       if (secondsLeft <= 0) return;
 
@@ -728,7 +769,7 @@ const Tracker = (() => {
       if (target === null || fired.has(target)) return;
 
       for (const threshold of ALERT_THRESHOLDS_S) if (threshold >= target) fired.add(threshold);
-      onAlert(target, secondsLeft, featured);
+      onAlert(target, secondsLeft, entry);
     };
   }
 
@@ -1095,7 +1136,8 @@ const Tracker = (() => {
     DAYS, DAYS_FULL, api, hourLabel, heatColor, attachTooltip, renderHeatmap,
     normalizeWindows, classifyWindows, peakLabel, createPoller, createTicker,
     secondsUntilHour, secondsUntilWindow, daysUntilWindow, isWorkDay,
-    windowTargetSec, windowTargetLabel, secondsUntilTarget, secondsUntilPrediction, sureRow,
+    windowTargetSec, windowTargetLabel, secondsUntilTarget, sureRow,
+    allMoments, nextMoment,
     momentOutcome, nowMinutes, clockLabel, loggedInPhase,
     breaksLabel,
     formatCountdown, getConfig, getTimezone, initThemeToggle,

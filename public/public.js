@@ -24,6 +24,7 @@
   let workHours = null; // the office's logging window, from /api/config
   let countdownOverride = null; // COUNTDOWN_OVERRIDE_MS, testing only
   let featured = null; // the currently-featured tier window, updated every poll
+  let phases = []; // the day's phases, refreshed each poll — the ticker reads this
   let todayMinutes = []; // today's sightings, minutes since midnight — drives the hit/miss badges
   // Which phase cards the reader has opened or closed by hand, keyed on the
   // phase's start hour. Deliberately not persisted: it is the state of this
@@ -207,11 +208,18 @@
     else showToast(on ? 'Roam alerts on — you will get a heads-up at 1 min and 30s.' : 'Roam alerts off.');
   });
 
-  const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, window_) => {
+  // Fires for EVERY predicted moment, each with its own pair of alerts — see
+  // createCountdownAlerter. The copy names which prediction is coming and how
+  // strong it is, because "a roam in 1 minute" means something different for a
+  // 19% moment than for a 6% one.
+  const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, entry) => {
+    const { moment, window: w } = entry;
     const when = threshold >= 60 ? '1 minute' : `${threshold} seconds`;
     const title = threshold >= 60 ? 'HR roam in ~1 minute' : 'HR roam in ~30 seconds';
-    Tracker.notify(title, `${window_.label} window · ${window_.targetLabel}`, 'countdown');
-    showToast(`Heads up — predicted roam at ${window_.targetLabel}, in ${when}.`, { fire: true });
+    const strength = typeof moment.pct === 'number' ? ` (${moment.pct}%)` : '';
+    Tracker.notify(title, `${moment.targetLabel} · ${moment.label}${strength} · ${w.timeLabel}`, 'countdown');
+    showToast(`Heads up — ${moment.label.toLowerCase()} roam predicted at `
+      + `${moment.targetLabel}, in ${when}.`, { fire: true });
   });
 
   // Ticks every second: shows a live countdown to the featured window's start,
@@ -220,10 +228,17 @@
   // digits pulse red for urgency.
   function tickCountdown() {
     syncSpotButton();
-    if (!featured) return;
+    // EVERY predicted moment, not just the sure one. The clock runs to whichever
+    // comes next — sure, likely, maybe or the wildcard between phases — so a
+    // prediction the card names is a prediction the page counts down to.
+    const next = Tracker.nextMoment(phases, timeZone, workHours);
+    if (!next) return;
+    if (next.window !== featured) featured = next.window;
+    renderNextLabels(next);
+
     // The override wins over "happening now": the point of it is to watch the
-    // countdown itself, and a live window would hide the thing under test.
-    if (featured.active && !countdownOverride) {
+    // countdown itself, and a live moment would hide the thing under test.
+    if (next.now && !countdownOverride) {
       countdownCanvas.style.display = 'none';
       countdownNow.style.display = 'block';
       countdownSr.textContent = 'Happening now';
@@ -231,18 +246,29 @@
     }
     countdownCanvas.style.display = 'block';
     countdownNow.style.display = 'none';
-    // To the predicted MOMENT (9:34), not the top of its hour — the page shows
-    // that time, so the clock has to agree with it.
     const secondsLeft = countdownOverride
       ? countdownOverride.secondsLeft()
-      : Tracker.secondsUntilPrediction(featured, timeZone, workHours);
-    checkCountdownAlert(featured, secondsLeft);
+      : Tracker.secondsUntilTarget(next.moment.targetSec, timeZone, workHours);
+    checkCountdownAlert(next, secondsLeft);
     const text = Tracker.formatCountdown(secondsLeft);
     countdownSr.textContent = text;
     if (timer3d) {
       timer3d.setText(text);
       timer3d.setUrgent(secondsLeft > 0 && secondsLeft < URGENT_THRESHOLD_S);
     }
+  }
+
+  // The two lines under the clock, describing the moment it is counting to.
+  // Written on every tick rather than only on a poll, because the moment the
+  // clock points at changes between polls.
+  function renderNextLabels(next) {
+    const { moment, window: w } = next;
+    const pct = typeof moment.pct === 'number' ? ` · ${moment.pct}%` : '';
+    featuredTierLabel.textContent = `Next predicted roam${w.dayLabel ? ` · ${w.dayLabel}` : ''}`;
+    windowLabel.textContent = `${moment.targetLabel}${w.dayLabel ? ` ${w.dayLabel}` : ''}`
+      + ` · ${moment.label}${pct} · ${moment.tier === 'wildcard'
+        ? `between ${w.timeLabel} and the next phase`
+        : `in ${w.timeLabel}`}`;
   }
   const ticker = Tracker.createTicker(tickCountdown);
 
@@ -461,12 +487,10 @@
     }
 
     featured = windows.find((w) => w.featured);
-    // The header names the PHASE, not a tier: the tiers are inside it now.
-    featuredTierLabel.textContent = `Next roam phase${featured.dayLabel ? ` · ${featured.dayLabel}` : ''}`;
-    // Exact time first, range second: the range is the evidence behind the
-    // prediction, not the prediction itself.
-    windowLabel.textContent = `${featured.targetLabel}${featured.dayLabel ? ` ${featured.dayLabel}` : ''}`
-      + ` · somewhere in ${featured.timeLabel}`;
+    // The two lines under the clock are written by renderNextLabels on every
+     // tick: which moment is next changes between polls, and a label refreshed
+     // only every five seconds would lag the clock above it.
+
     featuredDetail.textContent = featuredDetailText(featured);
     tickCountdown();
 
@@ -543,6 +567,7 @@
     }
     todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
     const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
+    phases = windows;
     renderTiers(windows, stats.total);
     // Same inputs the badges use, so the two cannot drift apart.
     checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),

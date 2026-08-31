@@ -82,10 +82,14 @@
     else showToast(on ? 'Roam alerts on — heads-up at 1 min and 30 s.' : 'Roam alerts off.');
   });
 
-  const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, window_) => {
+  // One pair of alerts per predicted moment — see the note in public.js.
+  const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, entry) => {
+    const { moment, window: w } = entry;
     const title = threshold >= 60 ? 'HR roam in ~1 minute' : 'HR roam in ~30 seconds';
-    Tracker.notify(title, `${window_.label} window · ${window_.targetLabel}`, 'countdown');
-    showToast(`Heads up — predicted roam at ${window_.targetLabel}, in ${threshold >= 60 ? '1 minute' : '30 seconds'}.`, { fire: true });
+    const strength = typeof moment.pct === 'number' ? ` (${moment.pct}%)` : '';
+    Tracker.notify(title, `${moment.targetLabel} · ${moment.label}${strength} · ${w.timeLabel}`, 'countdown');
+    showToast(`Heads up — ${moment.label.toLowerCase()} roam predicted at ${moment.targetLabel}, `
+      + `in ${threshold >= 60 ? '1 minute' : '30 seconds'}.`, { fire: true });
   });
 
   const checkPrediction = Tracker.createPredictionWatcher({
@@ -287,7 +291,8 @@
   let timeZone = 'UTC';
   let workHours = null; // the office's logging window, from /api/config
   let countdownOverride = null; // COUNTDOWN_OVERRIDE_MS, testing only
-  let featured = null; // the currently-featured tier window, updated every poll
+  let featured = null; // the phase owning the next predicted moment
+  let phases = []; // the day's phases, refreshed each poll — the ticker reads this
   let todayMinutes = []; // today's sightings, minutes since midnight — drives the hit/miss badges
   // Cards the reader opened or closed by hand — see the note in public.js.
   const openState = new Map();
@@ -315,9 +320,17 @@
   // Under 60s remaining, the 3D digits pulse red for urgency.
   function tickCountdown() {
     syncLogButton();
-    if (!featured) return;
+    // Every predicted moment, not just the sure one — see the note in public.js.
+    const next = Tracker.nextMoment(phases, timeZone, workHours);
+    if (!next) return;
+    if (next.window !== featured) featured = next.window;
+    const { moment, window: w } = next;
+    const pct = typeof moment.pct === 'number' ? ` · ${moment.pct}%` : '';
+    el('windowLabel').textContent = `${moment.targetLabel}${w.dayLabel ? ` ${w.dayLabel}` : ''}`
+      + ` · ${moment.label}${pct} · ${w.timeLabel}`;
+
     // The override wins over "happening now" — see the note in public.js.
-    if (featured.active && !countdownOverride) {
+    if (next.now && !countdownOverride) {
       el('countdownCanvas').style.display = 'none';
       el('countdownNow').style.display = 'block';
       el('countdownSr').textContent = 'Happening now';
@@ -325,11 +338,10 @@
     }
     el('countdownCanvas').style.display = 'block';
     el('countdownNow').style.display = 'none';
-    // To the exact predicted moment — see the note in public.js.
     const secondsLeft = countdownOverride
       ? countdownOverride.secondsLeft()
-      : Tracker.secondsUntilPrediction(featured, timeZone, workHours);
-    checkCountdownAlert(featured, secondsLeft);
+      : Tracker.secondsUntilTarget(moment.targetSec, timeZone, workHours);
+    checkCountdownAlert(next, secondsLeft);
     const text = Tracker.formatCountdown(secondsLeft);
     el('countdownSr').textContent = text;
     if (timer3d) {
@@ -353,6 +365,7 @@
     }
     todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
     const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
+    phases = windows;
     const chips = el('tierChips');
 
     if (windows.length === 0) {
@@ -368,8 +381,6 @@
 
     featured = windows.find((w) => w.featured);
     el('featuredTierLabel').textContent = `Next roam phase${featured.dayLabel ? ` · ${featured.dayLabel}` : ''}`;
-    el('windowLabel').textContent = `${featured.targetLabel}${featured.dayLabel ? ` ${featured.dayLabel}` : ''}`
-      + ` · somewhere in ${featured.timeLabel}`;
     el('featuredDetail').textContent = !featured.todayIsWorkDay
       ? `No roams expected today — the pattern only turns up on work days. Next window ${featured.dayLabel || 'soon'}.`
       : featured.dayOffset > 0
