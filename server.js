@@ -8,8 +8,9 @@ const fs = require('fs');
 const path = require('path');
 
 const authRoutes = require('./routes/auth');
-const sightingsRoutes = require('./routes/sightings');
-const { getWorkHours } = require('./services/work-hours');
+const { router: sightingsRoutes } = require('./routes/sightings');
+const cronRoutes = require('./routes/cron');
+const { getWorkHours, getBreaks } = require('./services/work-hours');
 
 // COUNTDOWN_OVERRIDE_MS forces the hero countdown to a fixed starting value, in
 // milliseconds, so the states that only happen in the last minute of a window —
@@ -124,8 +125,8 @@ app.use('/api/auth/register', authLimiter);
 
 // The anonymous "spot it now" button is public and unauthenticated, so it
 // needs its own abuse guard — generous enough for genuine excited clicking,
-// tight enough that it can't be used to spam writes or force Gemini spend
-// (it deliberately never triggers a Gemini recompute either, see routes/sightings.js).
+// tight enough that it can't be used to spam writes. Nothing on a request path
+// spends Gemini credit any more; that is the daily cron's job alone.
 const anonymousLogLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 10,
@@ -137,6 +138,9 @@ app.use('/api/sightings/anonymous', anonymousLogLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/sightings', sightingsRoutes);
+// Scheduled work, called from outside. Authorized by CRON_SECRET, not a cookie
+// — see routes/cron.js.
+app.use('/api/cron', cronRoutes);
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -147,6 +151,7 @@ app.get('/api/config', (req, res) => {
   res.json({
     timezone: process.env.TIMEZONE || 'UTC',
     workHours: getWorkHours(),
+    breaks: getBreaks(),
     countdownOverrideMs: getCountdownOverrideMs(),
   });
 });
@@ -156,6 +161,40 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong.' });
 });
 
+// The UTC hour at which the office clock reads `localHour` today. Whole-hour
+// offsets only, which covers every zone this is likely to run in; a half-hour
+// zone (Asia/Kolkata) rounds, and the warning below says so.
+function utcHourFor(localHour, timeZone) {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: 'numeric', hour12: false })
+    .formatToParts(now);
+  const here = Number.parseInt(parts.find((p) => p.type === 'hour').value, 10) % 24;
+  const offset = (here - now.getUTCHours() + 24) % 24;
+  return ((localHour - offset) % 24 + 24) % 24;
+}
+
+// vercel.json's cron schedule is a fixed UTC string; when the working day ends
+// is configuration. Change TIMEZONE or WORK_HOURS_END and the two drift apart
+// with no symptom other than the prediction refreshing at the wrong time of day,
+// which nobody would ever notice. So they are compared out loud at boot.
+function warnIfCronScheduleDrifted() {
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(path.join(__dirname, 'vercel.json'), 'utf8'));
+  } catch (e) {
+    return; // no vercel.json (a VPS deploy) — nothing to check against
+  }
+  const job = (config.crons || []).find((c) => /refresh-prediction/.test(c.path));
+  if (!job) return;
+  const scheduled = Number.parseInt(String(job.schedule).split(' ')[1], 10);
+  const timeZone = process.env.TIMEZONE || 'UTC';
+  const want = utcHourFor(getWorkHours().end, timeZone);
+  if (scheduled === want) return;
+  console.warn(`vercel.json runs the prediction refresh at ${scheduled}:00 UTC, but the working `
+    + `day ends at ${getWorkHours().end}:00 ${timeZone}, which is ${want}:00 UTC. `
+    + `Change the schedule to "0 ${want} * * *" (or ignore this on a half-hour-offset timezone).`);
+}
+
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Predict the Gank server listening on port ${PORT}`);
@@ -164,6 +203,11 @@ if (require.main === module) {
       console.warn(`COUNTDOWN_OVERRIDE_MS=${override} is set — the countdown on both pages is FAKE `
         + '(starts at that value and ticks to zero on load). Unset it for real predictions.');
     }
+    if (!process.env.CRON_SECRET) {
+      console.warn('CRON_SECRET is not set — /api/cron/refresh-prediction will refuse every call, '
+        + 'so the Gemini prediction will never be recomputed.');
+    }
+    warnIfCronScheduleDrifted();
   });
 }
 

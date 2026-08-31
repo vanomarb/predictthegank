@@ -20,13 +20,31 @@
   const INVITE_ROW = 'flex items-center justify-between gap-2.5 border-b border-line py-2.5 text-[13px] tabular-nums last:border-b-0';
   const INVITE_CODE = 'tracking-[0.03em] text-fg';
   const EMPTY = 'p-4 text-[13px] text-fg-muted';
-  // The admin console's chips are the compact variant of the public tracker's.
-  const CHIP = 'group flex min-w-[76px] flex-col items-center gap-0.5 rounded-xl border border-line bg-ink-950 px-3.5 py-2 '
-    + 'data-featured:border-amber-500 data-featured:bg-[rgba(242,169,59,0.08)] '
-    + 'data-passed:opacity-45 data-wildcard:border-dashed';
-  const CHIP_LABEL = 'text-[9px] uppercase tracking-[0.08em] text-fg-faint group-data-featured:text-amber-300';
-  const CHIP_TIME = 'text-[16px] font-semibold tracking-[-0.01em] text-fg '
-    + 'group-data-passed:line-through group-data-passed:decoration-fg-faint group-data-wildcard:text-[13px]';
+  // The admin console's phase cards are the compact variant of the public
+  // tracker's — same idea: the range is the card, the tiers are rows inside it.
+  const PHASE_CARD = 'group overflow-hidden rounded-xl border border-line bg-ink-950 '
+    + 'data-featured:border-amber-500 data-passed:opacity-45';
+  const PHASE_HEAD = 'flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 '
+    + 'hover:bg-ink-900 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-400 '
+    + 'group-data-featured:bg-[rgba(242,169,59,0.08)] [&::-webkit-details-marker]:hidden';
+  const PHASE_LEAD = 'text-[11px] tabular-nums text-fg-muted group-data-featured:text-amber-300';
+  const PHASE_CARET = 'shrink-0 text-fg-faint transition-transform duration-200 group-open:rotate-180';
+  const PHASE_NUM = 'inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border border-line text-[9px] tabular-nums text-fg-faint '
+    + 'group-data-featured:border-amber-500 group-data-featured:text-amber-300';
+  const PHASE_RANGE = 'text-[13px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
+    + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
+  const PHASE_META = 'ml-auto text-[10px] tabular-nums text-fg-faint';
+  const TIER_ROW = 'flex items-center gap-2 border-t border-line px-3 py-1.5';
+  // The wildcard goes between the cards — see the note in public.js.
+  // Hidden while its own phase is collapsed — see the note in public.js.
+  const WILD_LINK = 'mx-4 hidden [details[open]+&]:flex items-center gap-2 border-l-2 border-dashed border-line py-1 pl-3';
+  const WILD_TIME = 'w-[60px] shrink-0 text-[12px] font-semibold tabular-nums text-fg-muted';
+  const WILD_SUB = 'min-w-0 flex-1 truncate text-[10px] text-fg-faint';
+  const WILD_BADGE = 'shrink-0 rounded-full border border-dashed border-line px-2 py-0.5 text-[9px] uppercase tracking-[0.08em] text-fg-faint';
+  const TIER_TIME = 'w-[64px] shrink-0 text-[13px] font-semibold tabular-nums text-fg data-next:text-amber-300';
+  const TIER_SUB = 'min-w-0 flex-1 truncate text-[10px] text-fg-faint';
+  const TIER_BADGE = 'shrink-0 rounded-full border border-line px-2 py-0.5 text-[9px] uppercase tracking-[0.08em] text-fg-muted '
+    + 'data-next:border-amber-500 data-next:text-amber-300';
 
   // Toggles a boolean data attribute — the app's standard way of carrying UI
   // state now that Tailwind variants do the styling.
@@ -51,8 +69,8 @@
 
   const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, window_) => {
     const title = threshold >= 60 ? 'HR roam in ~1 minute' : 'HR roam in ~30 seconds';
-    Tracker.notify(title, `${window_.label} window · ${window_.timeLabel}`, 'countdown');
-    showToast(`Heads up — predicted roam in ${threshold >= 60 ? '1 minute' : '30 seconds'}.`);
+    Tracker.notify(title, `${window_.label} window · ${window_.targetLabel}`, 'countdown');
+    showToast(`Heads up — predicted roam at ${window_.targetLabel}, in ${threshold >= 60 ? '1 minute' : '30 seconds'}.`, { fire: true });
   });
 
   const checkPrediction = Tracker.createPredictionWatcher({
@@ -72,9 +90,15 @@
   else window.addEventListener('timer3d-ready', startTimer3D, { once: true });
   themeButtons.forEach((b) => b.addEventListener('click', () => { if (timer3d) timer3d.setTheme(isDarkTheme()); }));
 
-  function showToast(msg) {
-    Tracker.toast(el('toastHost'), msg);
+  // { fire: true } is the urgent variant, reserved for the countdown alerts.
+  function showToast(msg, opts) {
+    Tracker.toast(el('toastHost'), msg, opts);
   }
+
+  // Every load, no memory of the last one — see initAdvisory in viz.js. Shown
+  // when the console appears rather than at boot: over the sign-in form it would
+  // be advice about a button the reader cannot see yet.
+  const advisory = Tracker.initAdvisory();
   function showAuthError(msg) {
     const box = el('authError');
     box.textContent = msg;
@@ -283,9 +307,10 @@
     }
     el('countdownCanvas').style.display = 'block';
     el('countdownNow').style.display = 'none';
+    // To the exact predicted moment — see the note in public.js.
     const secondsLeft = countdownOverride
       ? countdownOverride.secondsLeft()
-      : Tracker.secondsUntilWindow(featured.hourStart, timeZone, workHours);
+      : Tracker.secondsUntilPrediction(featured, timeZone, workHours);
     checkCountdownAlert(featured, secondsLeft);
     const text = Tracker.formatCountdown(secondsLeft);
     el('countdownSr').textContent = text;
@@ -323,8 +348,9 @@
     }
 
     featured = windows.find((w) => w.featured);
-    el('featuredTierLabel').textContent = featured.label + (featured.dayLabel ? ` · ${featured.dayLabel}` : '');
-    el('windowLabel').textContent = featured.dayLabel ? `${featured.timeLabel} ${featured.dayLabel}` : featured.timeLabel;
+    el('featuredTierLabel').textContent = `Next roam phase${featured.dayLabel ? ` · ${featured.dayLabel}` : ''}`;
+    el('windowLabel').textContent = `${featured.targetLabel}${featured.dayLabel ? ` ${featured.dayLabel}` : ''}`
+      + ` · somewhere in ${featured.timeLabel}`;
     el('featuredDetail').textContent = !featured.todayIsWorkDay
       ? `No roams expected today — the pattern only turns up on work days. Next window ${featured.dayLabel || 'soon'}.`
       : featured.dayOffset > 0
@@ -332,11 +358,33 @@
         : featured.detail;
     tickCountdown();
 
-    chips.innerHTML = windows.map((w) => `
-      <div class="${CHIP}" ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''} ${w.tier === 'wildcard' ? 'data-wildcard' : ''}>
-        <span class="${CHIP_LABEL}">${w.label}</span>
-        <span class="${CHIP_TIME}">${w.timeLabel}</span>
-      </div>
+    // Collapsed unless it is the phase in play, wildcard between the cards —
+    // see the notes in public.js.
+    const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.8em' }) : '';
+    const wildcardOf = (w) => w.tiers.find((t) => t.tier === 'wildcard');
+    chips.innerHTML = windows.map((w, i) => `
+      <details class="${PHASE_CARD}" ${w.featured ? 'open data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+        <summary class="${PHASE_HEAD}">
+          <span class="${PHASE_NUM}">${i + 1}</span>
+          <span class="${PHASE_RANGE}">${w.timeLabel}</span>
+          <span class="${PHASE_LEAD}">${w.targetLabel}</span>
+          <span class="${PHASE_META}">${w.count ? `${w.count} logged` : w.badge}</span>
+          <span class="${PHASE_CARET}">${caret}</span>
+        </summary>
+        ${w.tiers.filter((t) => t.tier !== 'wildcard').map((t) => `
+          <div class="${TIER_ROW}">
+            <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
+            <span class="${TIER_SUB}">${t.from ? `${t.from} in the ${t.quarter} stretch` : `${t.quarter} midpoint`}</span>
+            <span class="${TIER_BADGE}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
+          </div>
+        `).join('')}
+      </details>
+      ${wildcardOf(w) ? `
+        <div class="${WILD_LINK}" data-wildcard>
+          <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
+          <span class="${WILD_SUB}">${wildcardOf(w).note || 'projected from the usual gap'}</span>
+          <span class="${WILD_BADGE}">${wildcardOf(w).label}</span>
+        </div>` : ''}
     `).join('');
     return windows;
   }
@@ -377,6 +425,9 @@
     poller = Tracker.createPoller(refresh, POLL_MS);
     poller.start();
     ticker.start();
+    // Here rather than at boot: the console is only now on screen, and the
+    // advice is about its log button.
+    if (advisory) advisory.show();
   }
   function switchToAuth() {
     el('appView').style.display = 'none';

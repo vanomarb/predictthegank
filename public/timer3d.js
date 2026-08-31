@@ -535,9 +535,51 @@ function createClock3D(canvas, font, state) {
     }
   }
 
+  // The clamp is a backstop for one very janky frame. It is NOT a frame-rate
+  // limiter, and it used to be set at 0.05: any device rendering slower than
+  // 20fps had its delta cut to 50ms, so a 380ms digit swap on a 130ms frame
+  // stretched to about a second of real time. 0.25 is low enough to catch a
+  // genuine stall and high enough that a slow device animates at the speed it
+  // was designed to.
+  const MAX_FRAME_S = 0.25;
+
+  // Longer than this and the loop was not running at all — it did not merely
+  // have one bad frame.
+  //
+  // The case that matters is an UNFOCUSED window. The browser pauses
+  // requestAnimationFrame there, but document.hidden stays FALSE and setInterval
+  // keeps ticking, so syncRunning() below never pauses us: the countdown goes on
+  // calling setText once a second, every call restarts a swap, and not a single
+  // frame renders. Come back a minute later and all of that is still queued,
+  // animating toward digits that changed thirty seconds ago — which is the fast
+  // transition that plays the instant the window is focused again.
+  //
+  // Those swaps are stale by definition: the text they are animating toward is
+  // already the text on screen. So they are finished, not played. Catching this
+  // by the frame gap rather than by listening for blur covers every way the loop
+  // can lose time — an unfocused window, a throttled frame budget, a sleeping
+  // laptop, a breakpoint in devtools — without enumerating them or trusting that
+  // the right event fires.
+  const STALE_FRAME_S = 0.5;
+
+  // Snap every in-flight swap to its finished state.
+  function settleMorphs() {
+    for (const slot of slots) {
+      if (slot.t >= 1) continue;
+      slot.t = 1;
+      stepMorph(slot);
+    }
+  }
+
   function frame() {
     raf = requestAnimationFrame(frame);
-    update(Math.min(clock.getDelta(), 0.05)); // clamped: a backgrounded tab must not jump
+    const delta = clock.getDelta();
+    if (delta > STALE_FRAME_S) {
+      settleMorphs();
+      renderer.render(scene, camera);
+      return;
+    }
+    update(Math.min(delta, MAX_FRAME_S));
     renderer.render(scene, camera);
   }
 

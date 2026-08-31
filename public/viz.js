@@ -26,6 +26,10 @@ const Tracker = (() => {
   const CONFIG_FALLBACK = {
     timezone: 'UTC',
     workHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5] },
+    // Minutes since midnight, end exclusive. The server decides them and does
+    // all the prediction work around them (see BREAK_TIMES); the page gets them
+    // only so it can say WHY nothing is predicted in the middle of the day.
+    breaks: [],
     countdownOverrideMs: null,
   };
   let configPromise = null;
@@ -36,6 +40,7 @@ const Tracker = (() => {
         .then((cfg) => ({
           timezone: cfg.timezone || CONFIG_FALLBACK.timezone,
           workHours: cfg.workHours || CONFIG_FALLBACK.workHours,
+          breaks: Array.isArray(cfg.breaks) ? cfg.breaks : CONFIG_FALLBACK.breaks,
           countdownOverrideMs: cfg.countdownOverrideMs || null,
         }))
         .catch(() => CONFIG_FALLBACK);
@@ -186,57 +191,115 @@ const Tracker = (() => {
     });
   }
 
-  const TIER_ORDER = { sure: 0, likely: 1, maybe: 2, wildcard: 3 };
   const TIER_LABEL = { sure: 'Sure', likely: 'Likely', maybe: 'Maybe', wildcard: 'Wildcard' };
-  // Only these tiers can ever become the big featured/countdown display —
-  // "wildcard" is a low-confidence hunch (median-gap projection, not a real
-  // pattern), so it stays a small chip rather than driving the main countdown.
-  const FEATURABLE_TIERS = ['sure', 'likely', 'maybe'];
 
   // Normalizes /api/sightings/stats' windows into a common shape, preferring
-  // the Gemini-refined smartWindows when present (and well-formed) and
-  // falling back to the statistical windows otherwise. Always sorted
-  // sure -> likely -> maybe -> wildcard regardless of what order the source
-  // returned. The wildcard tier is always statistical (stats.wildcard), even
-  // when the other 3 are Gemini-refined — it's a residual-frequency concept,
-  // not something worth asking Gemini to guess at.
+  // the Gemini-refined smartWindows when present (and well-formed) and falling
+  // back to the statistical ones otherwise.
+  //
+  // A window is a PHASE: one hour range, plus the sure/likely/maybe/wildcard
+  // moments inside it (see tiersForHour in routes/sightings.js). The tiers used
+  // to be three separate windows at three different hours, which read as four
+  // categories to choose between rather than as one schedule; they are rows
+  // inside a range now, and the ranges are the phases of the day.
+  //
+  // Phases come back in clock order, because that is what a schedule is. The
+  // sighting count rides along so the page can still say how much is behind
+  // each one.
   function normalizeWindows(stats) {
     const useSmart = Array.isArray(stats.smartWindows) && stats.smartWindows.length > 0;
     const source = useSmart ? stats.smartWindows : (stats.windows || []);
-    const normalized = source.map((w) => useSmart ? {
-      tier: w.tier,
-      hourStart: w.predictedHourStart,
-      hourEnd: w.predictedHourEnd,
-      detail: w.rationale,
-      badge: `AI · ${Math.round((w.confidence || 0) * 100)}% confident`,
-      isSmart: true,
-    } : {
-      tier: w.tier,
-      hourStart: w.hourStart,
-      hourEnd: w.hourEnd,
-      detail: `${w.count} of ${stats.total} logged sightings landed here (${w.pct}%).`,
-      badge: 'Statistical pattern',
-      isSmart: false,
-    });
+    return source
+      .map((w) => {
+        // predictedHourStart/End is the shape Gemini itself returns. GET /stats
+        // converts those to hourStart/hourEnd before sending, so this only
+        // matters against a server that has not been redeployed yet — but the
+        // failure mode is hourStart: undefined and a NaN:NaN:NaN countdown,
+        // which is worth ruling out. It has to be resolved BEFORE tierRows,
+        // which falls back to the window's own start hour.
+        const hourStart = w.hourStart != null ? w.hourStart : w.predictedHourStart;
+        const hourEnd = w.hourEnd != null ? w.hourEnd : w.predictedHourEnd;
+        return {
+          hourStart,
+          hourEnd,
+          count: w.count,
+          pct: w.pct,
+          tiers: tierRows(w, hourStart),
+          detail: useSmart
+            ? w.rationale
+            : `${w.count} of ${stats.total} logged sightings landed in this window (${w.pct}%).`,
+          badge: useSmart ? `AI \u00b7 ${Math.round((w.confidence || 0) * 100)}% confident` : 'Statistical pattern',
+          isSmart: useSmart,
+        };
+      })
+      .sort((a, b) => a.hourStart - b.hourStart);
+  }
 
-    if (stats.wildcard) {
-      const w = stats.wildcard;
-      normalized.push({
-        tier: 'wildcard',
-        hourStart: w.hour,
-        hourEnd: w.hour + 1, // only used for coarse passed-detection; display uses `minute` below
-        minute: w.minute,
-        detail: `Just a hunch — based on the typical gap between sightings, maybe around ${hourMinuteLabel(w.hour, w.minute)}. Low confidence.`,
-        badge: 'Small possibility',
-        isSmart: false,
-      });
-    }
+  // The rows inside a phase, each with its clock label worked out once.
+  //
+  // A payload without `tiers` is one from a server that predates phases (or a
+  // hand-built fixture): rather than render nothing, the window's own tier and
+  // predicted time become a single row, so an old server degrades to the old
+  // one-moment-per-window display instead of a blank card.
+  function tierRows(w, hourStart) {
+    const rows = Array.isArray(w.tiers) && w.tiers.length
+      ? w.tiers
+      : [{
+        tier: w.tier || 'sure',
+        hour: w.predictedHour != null ? w.predictedHour : hourStart,
+        minute: w.predictedMinute != null ? w.predictedMinute : (w.minute || 0),
+        from: w.predictedFrom != null ? w.predictedFrom : null,
+      }];
+    return rows.map((t) => {
+      const sec = (t.hour % 24) * 3600 + t.minute * 60;
+      return {
+        ...t,
+        label: TIER_LABEL[t.tier] || t.tier,
+        targetSec: sec,
+        targetLabel: hourMinuteLabel(t.hour, t.minute),
+      };
+    }).sort((a, b) => a.targetSec - b.targetSec);
+  }
 
-    return normalized.sort((a, b) => (TIER_ORDER[a.tier] ?? 9) - (TIER_ORDER[b.tier] ?? 9));
+  // What the countdown runs to: the phase's SURE row — the median minute of its
+  // busiest quarter-hour. That is the single best moment the data supports, and
+  // it is the one a viewer is really asking about; the other rows are the spread
+  // around it, not competing countdowns.
+  //
+  // Falls back to the earliest row, then to the top of the hour, so a window
+  // from an older server still counts down to something sensible.
+  function sureRow(w) {
+    const rows = (w && w.tiers) || [];
+    return rows.find((t) => t.tier === 'sure') || rows[0] || null;
+  }
+
+  function windowTargetSec(w) {
+    if (!w) return 0;
+    const row = sureRow(w);
+    if (row) return row.targetSec;
+    const h = w.predictedHour != null ? w.predictedHour : w.hourStart;
+    const m = w.predictedMinute != null ? w.predictedMinute : (w.minute || 0);
+    return (h % 24) * 3600 + m * 60;
+  }
+
+  function windowTargetLabel(w) {
+    const sec = windowTargetSec(w);
+    return hourMinuteLabel(Math.floor(sec / 3600), Math.floor((sec % 3600) / 60));
+  }
+
+  // "12:00–1:00pm and 3:15–3:30pm" — the breaks, in the app's usual clock
+  // style, joined the way a person would say them.
+  function breaksLabel(breaks) {
+    if (!breaks || breaks.length === 0) return '';
+    const one = (b) => `${hourMinuteLabel(Math.floor(b.start / 60), b.start % 60)}–`
+      + `${hourMinuteLabel(Math.floor(b.end / 60), b.end % 60)}`;
+    const parts = breaks.map(one);
+    if (parts.length === 1) return parts[0];
+    return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   }
 
   function windowLabel(w) {
-    if (w.minute !== undefined) return hourMinuteLabel(w.hourStart, w.minute);
+    if (w.tiers === undefined && w.minute !== undefined) return hourMinuteLabel(w.hourStart, w.minute);
     return w.hourStart === w.hourEnd ? hourLabel(w.hourStart) : `${hourLabel(w.hourStart)}–${hourLabel(w.hourEnd)}`;
   }
 
@@ -248,10 +311,6 @@ const Tracker = (() => {
     const get = (type) => parseInt((parts.find((p) => p.type === type) || {}).value, 10) || 0;
     return { hour: get('hour') % 24, minute: get('minute'), second: get('second') };
   }
-  function currentHourInTZ(timeZone) {
-    return localTimeParts(timeZone).hour;
-  }
-
   // Day of week in the office timezone, 0 = Sunday (same indexing as the
   // heatmap and as WORK_DAYS in .env).
   function currentDayInTZ(timeZone) {
@@ -359,10 +418,9 @@ const Tracker = (() => {
 
   // Days from today until the window starting at hourStart next comes round on a
   // work day: 0 = still to come today, 1 = tomorrow, 2+ = later in the week.
-  function daysUntilWindow(hourStart, timeZone, workHours) {
+  function daysUntilTargetSec(targetSec, timeZone, workHours) {
     const { hour, minute, second } = localTimeParts(timeZone);
     const nowSec = hour * 3600 + minute * 60 + second;
-    const targetSec = (hourStart % 24) * 3600;
     const today = currentDayInTZ(timeZone);
     for (let offset = 0; offset < 8; offset += 1) {
       if (!isWorkDay((today + offset) % 7, workHours)) continue;
@@ -372,14 +430,28 @@ const Tracker = (() => {
     return 1; // every day excluded (a misconfigured WORK_DAYS) — don't hang
   }
 
+  function daysUntilWindow(hourStart, timeZone, workHours) {
+    return daysUntilTargetSec((hourStart % 24) * 3600, timeZone, workHours);
+  }
+
   // Seconds until that window opens. Days are counted as 24h, the same
   // assumption the rest of this file makes; in a timezone with DST a countdown
   // spanning the changeover is out by an hour until it passes.
-  function secondsUntilWindow(hourStart, timeZone, workHours) {
+  function secondsUntilTarget(targetSec, timeZone, workHours) {
     const { hour, minute, second } = localTimeParts(timeZone);
     const nowSec = hour * 3600 + minute * 60 + second;
-    const targetSec = (hourStart % 24) * 3600;
-    return daysUntilWindow(hourStart, timeZone, workHours) * 86400 + targetSec - nowSec;
+    return daysUntilTargetSec(targetSec, timeZone, workHours) * 86400 + targetSec - nowSec;
+  }
+
+  function secondsUntilWindow(hourStart, timeZone, workHours) {
+    return secondsUntilTarget((hourStart % 24) * 3600, timeZone, workHours);
+  }
+
+  // What the countdown actually runs on: the seconds until the window's exact
+  // predicted moment, not the top of its hour. Counting to 9:00 while the page
+  // says 9:34 would be the display and the clock disagreeing in public.
+  function secondsUntilPrediction(w, timeZone, workHours) {
+    return secondsUntilTarget(windowTargetSec(w), timeZone, workHours);
   }
 
   // '' for today, 'tomorrow' for +1, otherwise the weekday name.
@@ -396,6 +468,14 @@ const Tracker = (() => {
   }
   // Ticks every second — drives a live countdown display independent of the
   // much slower 5s data poll. Paused when the tab is hidden, like the poller.
+  //
+  // A plain 1000ms interval, deliberately. An earlier version scheduled each
+  // tick against the wall-clock second boundary, on the theory that a drifting
+  // interval was behind a visibly uneven countdown. Measured on the real page it
+  // made no difference: neither version ever skipped or repeated a second over
+  // 45s, and the frame-to-frame spacing of the rendered digit swap was the same
+  // to within the noise. The uneven pacing was the render loop clamping its
+  // frame delta — see MAX_FRAME_S in timer3d.js.
   function createTicker(onTick) {
     let timer = null;
     function start() { if (timer) return; onTick(); timer = setInterval(onTick, 1000); }
@@ -415,17 +495,30 @@ const Tracker = (() => {
   // say which day that is ('' today, 'tomorrow', or 'Monday'). The caller needs
   // that instead of a bare "tomorrow" flag, which was wrong every weekend.
   function classifyWindows(windows, timeZone, workHours) {
-    const now = currentHourInTZ(timeZone);
+    const { hour, minute, second } = localTimeParts(timeZone);
+    const nowSec = hour * 3600 + minute * 60 + second;
     const todayIsWorkDay = isWorkDay(currentDayInTZ(timeZone), workHours);
+    // "Active" is now: the exact predicted moment has arrived and the window has
+    // not closed yet. It used to mean "anywhere inside the hour", which was fine
+    // when the hour WAS the prediction — but now that the page counts down to
+    // 9:34, treating 9:00 as active would swap a running countdown for
+    // HAPPENING NOW half an hour early and the countdown would never be seen.
+    // hourEnd is deliberately not wrapped with % 24: a window ending at hour 24
+    // has to stay in the future all day, not wrap round to midnight.
     const classified = windows.map((w) => ({
       ...w,
       label: TIER_LABEL[w.tier] || w.tier,
       timeLabel: windowLabel(w),
-      passed: todayIsWorkDay && now >= w.hourEnd,
-      active: todayIsWorkDay && now >= w.hourStart && now < w.hourEnd,
+      targetLabel: windowTargetLabel(w),
+      targetSec: windowTargetSec(w),
+      passed: todayIsWorkDay && nowSec >= w.hourEnd * 3600,
+      active: todayIsWorkDay && nowSec >= windowTargetSec(w) && nowSec < w.hourEnd * 3600,
     }));
-    let featuredIndex = classified.findIndex((w) => FEATURABLE_TIERS.includes(w.tier) && !w.passed);
-    if (featuredIndex === -1) featuredIndex = classified.findIndex((w) => FEATURABLE_TIERS.includes(w.tier));
+    // The next phase that has not closed. There is no tier filter any more:
+    // every phase carries all four tiers now, so "which window can be featured"
+    // is purely a question about the time of day.
+    let featuredIndex = classified.findIndex((w) => !w.passed);
+    if (featuredIndex === -1) featuredIndex = 0;
 
     const featured = classified[featuredIndex];
     // A window that is happening RIGHT NOW is today's, however its start hour
@@ -434,7 +527,7 @@ const Tracker = (() => {
     // "· tomorrow" while the page says HAPPENING NOW would be nonsense.
     const dayOffset = !featured || featured.active
       ? 0
-      : daysUntilWindow(featured.hourStart, timeZone, workHours);
+      : daysUntilTargetSec(windowTargetSec(featured), timeZone, workHours);
     const dayLabel = dayOffsetLabel(dayOffset, timeZone);
 
     return classified.map((w, i) => (i === featuredIndex
@@ -631,9 +724,17 @@ const Tracker = (() => {
   // bubble's face for the 250ms the animation lasted. Keeping the animation one
   // level out means the bubble is never a stacking context and the flames stay
   // behind it throughout.
-  const TOAST_WRAP_CLASS = 'mt-2 animate-toast-in';
-  const TOAST_CLASS = 'relative rounded-xl border border-line-strong bg-ink-800 px-[18px] py-[11px] text-[13px] text-fg-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)]';
+  const TOAST_WRAP_CLASS = 'mt-2 flex w-full justify-center animate-toast-in';
+  // max-w-full and wrapping: on a phone a long message forced the bubble wider
+  // than the screen, which dragged the whole fixed host off-centre and took the
+  // flames with it.
+  const TOAST_CLASS = 'relative max-w-full rounded-xl border border-line-strong bg-ink-800 px-[18px] py-[11px] text-[13px] text-fg-muted shadow-[0_8px_24px_rgba(0,0,0,0.35)] break-words max-[420px]:px-3.5 max-[420px]:text-xs';
   // Fire on a toast, Messenger-style: flames rising from BEHIND the bubble.
+  //
+  // ONLY the countdown alerts ask for it, via toast(host, msg, { fire: true }).
+  // Setting a toast alight is a way of saying "this one is urgent", and it only
+  // says that if the ordinary ones — logged, undone, invite code, an error —
+  // are not also on fire.
   //
   // fire.lottie.json is a LottieFiles asset (Lottie Simple License, "Fire" by
   // LottieFiles Mobile) — ONE centred flame on a transparent 1080x1080 canvas.
@@ -648,37 +749,66 @@ const Tracker = (() => {
   // position:relative with no z-index, so it is not a stacking context and a
   // negative-z child paints beneath its background.
   const TOAST_FIRE_CLASS = 'pointer-events-none absolute -z-10';
-  // left %, bottom px, size px — hand-placed rather than random so a toast looks
-  // the same every time. The outer two hang past the bubble's ends.
-  // Sizes are generous because the asset has a lot of empty canvas around the
-  // flame — the visible tongue is roughly 60% of its box, so a 60px box renders
-  // a 35px flame. Positions overlap and hang past both ends so the row reads as
-  // one fire rather than five separate flames.
+  // left %, bottom px, and a size as a FRACTION OF THE BUBBLE'S WIDTH. The sizes
+  // used to be fixed pixels, which is what broke this on a phone: a 124px flame
+  // on a 210px-wide toast is taller than the toast is long, so the message
+  // vanished inside a bonfire. Scaling with the bubble keeps the effect the same
+  // shape at every width, and the clamp stops it collapsing to nothing on a very
+  // narrow screen or ballooning on a very wide one.
+  //
+  // The fractions are generous because the asset has a lot of empty canvas
+  // around the flame — the visible tongue is roughly 60% of its box. Positions
+  // overlap and hang past both ends so the row reads as one fire rather than
+  // five separate flames.
   const TOAST_FLAMES = [
-    { left: -14, bottom: -6, size: 92, frame: 0 },
-    { left: 6, bottom: -2, size: 112, frame: 24 },
-    { left: 30, bottom: 0, size: 124, frame: 48 },
-    { left: 55, bottom: -2, size: 112, frame: 12 },
-    { left: 78, bottom: -6, size: 96, frame: 66 },
+    { left: -14, bottom: -6, scale: 0.30, frame: 0 },
+    { left: 6, bottom: -2, scale: 0.37, frame: 24 },
+    { left: 30, bottom: 0, scale: 0.41, frame: 48 },
+    { left: 55, bottom: -2, scale: 0.37, frame: 12 },
+    { left: 78, bottom: -6, scale: 0.32, frame: 66 },
   ];
+  // The phone layout. Not the wide one with two flames deleted: dropping the
+  // outer pair leaves the fire stopping short of both ends of the bubble, which
+  // looks like it is burning in the middle rather than underneath. These three
+  // are respread to span the bubble edge to edge instead, with nothing hanging
+  // past it — the boxes overlap (0-34%, 33-73%, 66-100%) so it still reads as
+  // one fire and not as three separate tongues.
+  const TOAST_FLAMES_NARROW = [
+    { left: 0, bottom: -4, scale: 0.34, frame: 12 },
+    { left: 33, bottom: 0, scale: 0.40, frame: 48 },
+    { left: 66, bottom: -4, scale: 0.34, frame: 66 },
+  ];
+  const FLAME_MIN_PX = 46;
+  const FLAME_MAX_PX = 124;
+  // Five overlapping tongues need a bubble wide enough to space them across;
+  // narrower than this they merge into one blob, and they cost two extra rAF
+  // loops on the sort of device least able to spare them.
+  const FLAME_WIDE_MIN_PX = 260;
+  // How far past the bubble's end the outermost flames of the wide layout
+  // reach, as a fraction of the bubble's width — the |left| of its first entry.
+  const FLAME_OVERHANG = 0.14;
 
-  function toast(host, msg) {
+  // Which layout the bubble gets. The wide one needs BOTH a bubble big enough
+  // to space five flames across and somewhere for its overhang to go: on a
+  // phone the bubble very nearly fills the screen, so those outer flames hung
+  // off the side and rendered as slices chopped off by the viewport edge, which
+  // is exactly what the fire looked like on mobile.
+  function flameLayoutFor(bubbleWidth) {
+    const viewport = (typeof window !== 'undefined' && window.innerWidth) || bubbleWidth;
+    const wide = bubbleWidth >= FLAME_WIDE_MIN_PX
+      && (viewport - bubbleWidth) / 2 >= bubbleWidth * FLAME_OVERHANG;
+    return wide ? TOAST_FLAMES : TOAST_FLAMES_NARROW;
+  }
+
+  // toast(host, message) is a plain bubble; toast(host, message, { fire: true })
+  // is the urgent one — see the note above TOAST_FIRE_CLASS.
+  function toast(host, msg, options) {
     if (!host) return null;
+    const opts = options || {};
     const wrap = document.createElement('div');
     wrap.className = TOAST_WRAP_CLASS;
     const bubble = document.createElement('div');
     bubble.className = TOAST_CLASS;
-
-    // One span per flame. Their geometry is per-instance arithmetic, so it goes
-    // in inline styles: there is no Tailwind class for "the third flame".
-    const fires = TOAST_FLAMES.map((f) => {
-      const span = document.createElement('span');
-      span.className = TOAST_FIRE_CLASS;
-      span.style.cssText = `left:${f.left}%; bottom:${f.bottom}px; `
-        + `width:${f.size}px; height:${f.size}px;`;
-      bubble.appendChild(span);
-      return span;
-    });
 
     const label = document.createElement('span');
     label.className = 'relative';
@@ -687,9 +817,27 @@ const Tracker = (() => {
     wrap.appendChild(bubble);
     host.appendChild(wrap);
 
+    // The flames are sized from the bubble's MEASURED width, so they can only be
+    // added once it is in the document — before that offsetWidth is 0 and every
+    // flame would clamp to the minimum.
+    const width = bubble.offsetWidth || 0;
+    const flames = opts.fire ? flameLayoutFor(width) : [];
+
+    // One span per flame. Their geometry is per-instance arithmetic, so it goes
+    // in inline styles: there is no Tailwind class for "the third flame".
+    const fires = flames.map((f) => {
+      const size = Math.round(Math.min(FLAME_MAX_PX, Math.max(FLAME_MIN_PX, width * f.scale)));
+      const span = document.createElement('span');
+      span.className = TOAST_FIRE_CLASS;
+      span.style.cssText = `left:${f.left}%; bottom:${f.bottom}px; `
+        + `width:${size}px; height:${size}px;`;
+      bubble.appendChild(span);
+      return span;
+    });
+
     // Aspect preserved (the default 'meet'): each span is square and holds one
     // whole flame. goToAndPlay puts each copy at a different point in the loop.
-    const lottie = lottieLib();
+    const lottie = fires.length ? lottieLib() : null;
     const anims = [];
     if (lottie) {
       fires.forEach((span, i) => {
@@ -700,7 +848,7 @@ const Tracker = (() => {
           autoplay: true,
           path: '/fire.lottie.json',
         });
-        anim.addEventListener('DOMLoaded', () => anim.goToAndPlay(TOAST_FLAMES[i].frame, true));
+        anim.addEventListener('DOMLoaded', () => anim.goToAndPlay(flames[i].frame, true));
         anims.push(anim);
       });
     }
@@ -739,6 +887,52 @@ const Tracker = (() => {
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', warmToastClasses);
     else warmToastClasses();
+  }
+
+  // ---- the logging advisory ----
+  // Shown on EVERY page load, on purpose. It is not a consent banner whose job
+  // is to be agreed to once and never seen again: every prediction on the page
+  // is built out of what people log, so a reminder about how to log is worth
+  // more than the small annoyance of seeing it twice. Nothing is remembered
+  // between loads — no storage, no flag, no "don't show this again".
+  //
+  // It is skipped for the ?preview= flags, which exist to look at the outcome
+  // modals; a dialog sitting on top of the thing under inspection would make
+  // that tool useless.
+  //
+  // Returns a { show, hide } pair, or null when the markup is absent.
+  function initAdvisory({ modalId, closeIds, onDismiss } = {}) {
+    const modal = document.getElementById(modalId || 'advisoryModal');
+    if (!modal) return null;
+    let lastFocused = null;
+
+    function hide() {
+      modal.style.display = 'none';
+      document.removeEventListener('keydown', onKey);
+      // Put focus back where the reader left it, rather than dropping it on
+      // <body> and making a keyboard user tab from the top of the page again.
+      if (lastFocused && lastFocused.focus) lastFocused.focus();
+      if (onDismiss) onDismiss();
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') hide();
+    }
+    function show() {
+      lastFocused = document.activeElement;
+      modal.style.display = 'flex';
+      document.addEventListener('keydown', onKey);
+      const ok = document.getElementById('advisoryOk');
+      if (ok && ok.focus) ok.focus();
+    }
+
+    (closeIds || ['advisoryClose', 'advisoryOk']).forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', hide);
+    });
+    // Clicking the backdrop dismisses it too; clicking the panel must not.
+    modal.addEventListener('click', (e) => { if (e.target === modal) hide(); });
+
+    return { show, hide };
   }
 
   // ---- lightweight confetti burst, no external assets ----
@@ -872,8 +1066,11 @@ const Tracker = (() => {
     normalizeWindows, classifyWindows, peakLabel, createPoller, createTicker,
     secondsUntilHour, secondsUntilWindow, daysUntilWindow, isWorkDay,
     windowRange, windowPhase, WINDOW_GRACE_S,
+    windowTargetSec, windowTargetLabel, secondsUntilTarget, secondsUntilPrediction, sureRow,
+    breaksLabel,
     formatCountdown, getConfig, getTimezone, initThemeToggle,
-    lottieLib, toast, confettiBurst, createMissedPredictionWatcher, createPredictionWatcher,
+    lottieLib, toast, confettiBurst, initAdvisory,
+    createMissedPredictionWatcher, createPredictionWatcher,
     workHoursState, currentDayInTZ,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
     initNotifyToggle, createCountdownAlerter, ALERT_THRESHOLDS_S,

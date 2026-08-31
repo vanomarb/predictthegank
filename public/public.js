@@ -9,6 +9,8 @@
   const windowLabel = document.getElementById('windowLabel');
   const featuredDetail = document.getElementById('featuredDetail');
   const tierChips = document.getElementById('tierChips');
+  const phasesNote = document.getElementById('phasesNote');
+  const breakNote = document.getElementById('breakNote');
   const spotHint = document.getElementById('spotHint');
   const heatmapGrid = document.getElementById('heatmapGrid');
   const totalStat = document.getElementById('totalStat');
@@ -70,8 +72,10 @@
     document.getElementById('spotBtnLabel').textContent = open ? 'I see them — log it!' : 'Logging closed';
   }
 
-  function showToast(msg) {
-    Tracker.toast(document.getElementById('toastHost'), msg);
+  // opts is passed straight through to Tracker.toast; { fire: true } is the
+  // urgent variant and belongs to the countdown alerts alone.
+  function showToast(msg, opts) {
+    Tracker.toast(document.getElementById('toastHost'), msg, opts);
   }
 
   // ---- outcome modals ----
@@ -165,6 +169,10 @@
     },
   });
 
+  // ---- the logging advisory ----
+  // Every load, no memory of the last one — see initAdvisory in viz.js.
+  const advisory = Tracker.initAdvisory();
+
   // ---- ?preview=hit|miss|toast ----
   // Shows an outcome on demand so the presentation — lottie, copy, layout — can
   // be checked without waiting for a real window to open and close. It only
@@ -176,7 +184,9 @@
     const which = previewMatch[1];
     if (which === 'hit') hitModal.show('Preview — this is what a hit looks like.');
     else if (which === 'miss') missModal.show('Preview — this is what a miss looks like.');
-    else showToast('Preview — a toast, fully ablaze.');
+    else showToast('Preview — a countdown toast, fully ablaze.', { fire: true });
+  } else if (advisory) {
+    advisory.show();
   }
 
   // ---- countdown alerts ----
@@ -185,14 +195,14 @@
   // as well as a toast.
   Tracker.initNotifyToggle(document.getElementById('notifyToggle'), (on, permission) => {
     if (permission === 'denied') showToast('Your browser is blocking notifications for this site.');
-    else showToast(on ? 'Roam alerts on — you will get a heads-up at 1 min and 30 s.' : 'Roam alerts off.');
+    else showToast(on ? 'Roam alerts on — you will get a heads-up at 1 min and 30s.' : 'Roam alerts off.');
   });
 
   const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, window_) => {
     const when = threshold >= 60 ? '1 minute' : `${threshold} seconds`;
     const title = threshold >= 60 ? 'HR roam in ~1 minute' : 'HR roam in ~30 seconds';
-    Tracker.notify(title, `${window_.label} window · ${window_.timeLabel}`, 'countdown');
-    showToast(`Heads up — predicted roam in ${when}.`);
+    Tracker.notify(title, `${window_.label} window · ${window_.targetLabel}`, 'countdown');
+    showToast(`Heads up — predicted roam at ${window_.targetLabel}, in ${when}.`, { fire: true });
   });
 
   // Ticks every second: shows a live countdown to the featured window's start,
@@ -212,9 +222,11 @@
     }
     countdownCanvas.style.display = 'block';
     countdownNow.style.display = 'none';
+    // To the predicted MOMENT (9:34), not the top of its hour — the page shows
+    // that time, so the clock has to agree with it.
     const secondsLeft = countdownOverride
       ? countdownOverride.secondsLeft()
-      : Tracker.secondsUntilWindow(featured.hourStart, timeZone, workHours);
+      : Tracker.secondsUntilPrediction(featured, timeZone, workHours);
     checkCountdownAlert(featured, secondsLeft);
     const text = Tracker.formatCountdown(secondsLeft);
     countdownSr.textContent = text;
@@ -225,54 +237,180 @@
   }
   const ticker = Tracker.createTicker(tickCountdown);
 
-  // Tier-chip markup. State rides on data attributes rather than extra classes:
-  // the attribute selector (and group-data-* for the children) outranks the base
-  // utilities, whereas a second competing utility would be decided by compiled
-  // source order. `group` is what lets the label and time react to the chip's
-  // own state.
-  const CHIP = 'group flex min-w-[92px] flex-col items-center gap-[3px] rounded-xl border border-line bg-ink-900 px-[18px] py-2.5 transition-[border-color,background-color,transform] duration-200 '
-    + 'data-featured:border-amber-500 data-featured:bg-[rgba(242,169,59,0.08)] data-featured:-translate-y-0.5 '
-    + 'data-passed:opacity-45 data-wildcard:border-dashed';
-  const CHIP_LABEL = 'text-[10px] uppercase tracking-[0.1em] text-fg-faint group-data-featured:text-amber-300';
-  const CHIP_TIME = 'text-[19px] font-semibold tracking-[-0.01em] text-fg '
-    + 'group-data-passed:line-through group-data-passed:decoration-fg-faint group-data-wildcard:text-[15px]';
+  // Phase-card markup.
+  //
+  // A PHASE is one time range — one stretch of the day HR is expected to be out
+  // — and Sure/Likely/Maybe/Wildcard are the moments INSIDE it, not four rival
+  // windows to choose between. So the range is the card, and the tiers are its
+  // rows: each row leads with a real clock time and carries its tier as a badge.
+  // The next range is simply the next card, which is what "phase" means here.
+  //
+  // State rides on data attributes rather than extra classes: the attribute
+  // selector (and group-data-* for the children) outranks the base utilities,
+  // whereas a second competing utility would be decided by compiled source
+  // order. `group` is what lets the children react to the card's own state.
+  // The card is a <details>: only the phase actually coming up is worth the
+  // vertical space, so every other one collapses to its summary line. Native
+  // disclosure rather than a class toggle — it is keyboard-operable, it works
+  // before any of this JS runs, and there is no open/closed state of our own to
+  // keep in sync across the five-second poll.
+  const PHASE_CARD = 'group overflow-hidden rounded-2xl border border-line bg-ink-900 transition-[border-color] duration-200 '
+    + 'data-featured:border-amber-500 data-passed:opacity-45';
+  // list-none plus the webkit marker rule removes the browser's own triangle;
+  // the chevron below replaces it so it can be styled and rotated.
+  const PHASE_HEAD = 'flex cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-2.5 '
+    + 'transition-colors duration-150 hover:bg-ink-800 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-400 '
+    + 'group-data-featured:bg-[rgba(242,169,59,0.08)] [&::-webkit-details-marker]:hidden';
+  const PHASE_NUM = 'inline-flex size-[22px] shrink-0 items-center justify-center rounded-full border border-line text-[10px] font-semibold tabular-nums text-fg-faint '
+    + 'group-data-featured:border-amber-500 group-data-featured:text-amber-300';
+  const PHASE_RANGE = 'text-[15px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
+    + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
+  // The phase's headline moment, kept in the summary so a COLLAPSED card still
+  // answers "when" without being opened. That is the point of collapsing them:
+  // less space, not less information.
+  const PHASE_LEAD = 'text-[13px] tabular-nums text-fg-muted group-data-featured:text-amber-300';
+  const PHASE_META = 'ml-auto text-[11px] tabular-nums text-fg-faint';
+  const PHASE_CARET = 'shrink-0 text-fg-faint transition-transform duration-200 group-open:rotate-180';
+
+  // One moment inside the range. The separator is on the TOP of each row rather
+  // than the bottom of the header: a collapsed card has no rows, and a header
+  // with a bottom border and nothing under it is a line hanging in mid-air.
+  const TIER_ROW = 'flex items-center gap-3 border-t border-line px-4 py-2.5';
+  const TIER_TIME = 'w-[76px] shrink-0 text-[17px] font-semibold tabular-nums tracking-[-0.01em] text-fg data-next:text-amber-300';
+  const TIER_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint';
+  const TIER_BADGE = 'shrink-0 self-start rounded-full border border-line px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] text-fg-muted '
+    + 'data-next:border-amber-500 data-next:text-amber-300';
+
+  // The wildcard sits BETWEEN the cards, not inside one.
+  //
+  // It is projected forward off the end of a phase and usually lands outside it
+  // — 10:35am for a 9–10am window — so filing it under that window's range was
+  // a small lie about where it happens. In the gap between two cards it says
+  // what it actually is: not part of either phase, just the chance of a roam on
+  // the way from one to the next. The dashed rule down its left is what makes it
+  // read as a link between them rather than a card of its own.
+  // Wraps on a phone: at 360px the time and the badge leave the note about
+  // 100px of column, and "projected from the usual 53-minute gap" came out as a
+  // seven-line ribbon. Under 480px the note drops to its own full-width line
+  // underneath instead, with the time and badge sharing the one above.
+  // Hidden while the phase above it is collapsed. The wildcard belongs to that
+  // phase — it is the chance of a roam on the way OUT of it — so a row of
+  // collapsed cards with dangling projections between them reads as three
+  // wildcards belonging to nothing.
+  //
+  // The adjacent-sibling selector, not Tailwind's `peer`: peer variants use the
+  // general sibling combinator, so every wildcard after the one open card would
+  // match it and show. `details[open] + &` is true only for the card directly
+  // above.
+  const WILD_LINK = 'mx-5 hidden [details[open]+&]:flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-dashed border-line py-1.5 pl-4';
+  const WILD_TIME = 'shrink-0 text-[15px] font-semibold tabular-nums text-fg-muted min-[481px]:w-[68px]';
+  const WILD_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint '
+    + 'max-[480px]:order-last max-[480px]:w-full max-[480px]:flex-none';
+  const WILD_BADGE = 'shrink-0 rounded-full border border-dashed border-line px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] text-fg-faint max-[480px]:ml-auto';
 
   // Three cases, and the weekend one is the reason this exists: the pattern is
   // learned from work-day sightings, so on a Saturday there is nothing to wait
   // for today and saying "check back tomorrow" would be wrong twice over.
   function featuredDetailText(featured) {
     if (!featured.todayIsWorkDay) {
-      return `No roams expected today — the pattern only turns up on work days. Next window ${featured.dayLabel || 'soon'}.`;
+      return `No roams expected today — the pattern only turns up on work days. `
+        + `Next window ${featured.dayLabel || 'soon'}. ${sourceOfExactTime(featured)}`;
     }
     if (featured.dayOffset > 0) {
-      return `Today's windows have passed. This pattern usually repeats — check back ${featured.dayLabel}.`;
+      return `Today's windows have passed. This pattern usually repeats — check back `
+        + `${featured.dayLabel}. ${sourceOfExactTime(featured)}`;
     }
-    return featured.detail;
+    return `${featured.detail} ${sourceOfExactTime(featured)}`.trim();
   }
 
-  function renderTiers(windows) {
+  // Where the minute on the countdown comes from. A countdown reads as a far more
+  // precise claim than the data supports, so the page says outright how the
+  // number was arrived at rather than letting it look like certainty.
+  function sourceOfExactTime(w) {
+    const row = Tracker.sureRow(w);
+    if (!row) return '';
+    if (!row.from) {
+      return `${row.targetLabel} is the middle of the ${row.quarter || 'window'} stretch — nothing has been logged there yet.`;
+    }
+    return `${row.targetLabel} is the median of ${row.from} sighting${row.from === 1 ? '' : 's'} logged in the ${row.quarter} stretch of that window.`;
+  }
+
+  // A phase card holds the moments the data actually places inside its range;
+  // the wildcard is pulled out and rendered between the cards instead (see
+  // WILD_LINK), because that is where it lands.
+  const momentsOf = (w) => w.tiers.filter((t) => t.tier !== 'wildcard');
+  const wildcardOf = (w) => w.tiers.find((t) => t.tier === 'wildcard');
+
+  // The line under each moment: what the number is actually based on. A
+  // projection and a measurement must not read the same.
+  function tierSubtitle(t) {
+    if (t.tier === 'wildcard') return t.note || 'projected from the usual gap between sightings';
+    if (!t.from) return `nothing logged in the ${t.quarter} stretch yet — this is its midpoint`;
+    return `${t.from} sighting${t.from === 1 ? '' : 's'} in the ${t.quarter} stretch`;
+  }
+
+  function renderTiers(windows, total) {
     if (windows.length === 0) {
       featured = null;
       featuredTierLabel.textContent = 'Next predicted roam';
       countdownSr.textContent = '--:--:--';
       if (timer3d) { timer3d.setText('--:--:--'); timer3d.setUrgent(false); }
       windowLabel.textContent = 'Still watching…';
-      featuredDetail.textContent = 'No sightings logged yet — check back once the team starts spotting.';
+      // Two different empty states. Nothing logged at all is the ordinary one;
+      // sightings logged but no phase built from them means every one of them
+      // landed in break time, and telling that person "no sightings logged yet"
+      // reads as the app having lost their data.
+      featuredDetail.textContent = total > 0
+        ? 'Sightings logged, but none outside break time yet — nothing to predict from so far.'
+        : 'No sightings logged yet — check back once the team starts spotting.';
       tierChips.innerHTML = '';
+      if (phasesNote) phasesNote.textContent = 'nothing to schedule yet';
       return;
     }
 
     featured = windows.find((w) => w.featured);
-    featuredTierLabel.textContent = featured.label + (featured.dayLabel ? ` · ${featured.dayLabel}` : '');
-    windowLabel.textContent = featured.dayLabel ? `${featured.timeLabel} ${featured.dayLabel}` : featured.timeLabel;
+    // The header names the PHASE, not a tier: the tiers are inside it now.
+    featuredTierLabel.textContent = `Next roam phase${featured.dayLabel ? ` · ${featured.dayLabel}` : ''}`;
+    // Exact time first, range second: the range is the evidence behind the
+    // prediction, not the prediction itself.
+    windowLabel.textContent = `${featured.targetLabel}${featured.dayLabel ? ` ${featured.dayLabel}` : ''}`
+      + ` · somewhere in ${featured.timeLabel}`;
     featuredDetail.textContent = featuredDetailText(featured);
     tickCountdown();
 
-    tierChips.innerHTML = windows.map((w) => `
-      <div class="${CHIP}" ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''} ${w.tier === 'wildcard' ? 'data-wildcard' : ''}>
-        <span class="${CHIP_LABEL}">${w.label}</span>
-        <span class="${CHIP_TIME}">${w.timeLabel}</span>
-      </div>
+    if (phasesNote) {
+      const left = windows.filter((w) => !w.passed).length;
+      phasesNote.textContent = featured.todayIsWorkDay
+        ? `${left} of ${windows.length} still to come`
+        : `next work day · ${windows.length} phase${windows.length === 1 ? '' : 's'}`;
+    }
+    // Only the phase in play is expanded. `open` is set from the data on every
+    // render, so a phase that closes while the page is left open collapses on
+    // its own and the next one takes the space.
+    const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.85em' }) : '';
+    tierChips.innerHTML = windows.map((w, i) => `
+      <details class="${PHASE_CARD}" ${w.featured ? 'open data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+        <summary class="${PHASE_HEAD}">
+          <span class="${PHASE_NUM}">${i + 1}</span>
+          <span class="${PHASE_RANGE}">${w.timeLabel}</span>
+          <span class="${PHASE_LEAD}">${w.targetLabel}</span>
+          <span class="${PHASE_META}">${w.count ? `${w.count} logged` : w.badge}</span>
+          <span class="${PHASE_CARET}">${caret}</span>
+        </summary>
+        ${momentsOf(w).map((t) => `
+          <div class="${TIER_ROW}">
+            <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
+            <span class="${TIER_SUB}">${tierSubtitle(t)}</span>
+            <span class="${TIER_BADGE}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
+          </div>
+        `).join('')}
+      </details>
+      ${wildcardOf(w) ? `
+        <div class="${WILD_LINK}" data-wildcard>
+          <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
+          <span class="${WILD_SUB}">${tierSubtitle(wildcardOf(w))}</span>
+          <span class="${WILD_BADGE}">${wildcardOf(w).label}</span>
+        </div>` : ''}
     `).join('');
   }
 
@@ -281,6 +419,12 @@
     const config = await Tracker.getConfig();
     timeZone = config.timezone;
     workHours = config.workHours;
+    // Why there is no phase over lunch, and why a wildcard skips past it.
+    if (breakNote && config.breaks && config.breaks.length) {
+      breakNote.textContent = `Nothing is predicted during break time — `
+        + `${Tracker.breaksLabel(config.breaks)}. Sightings logged then still count.`;
+      breakNote.style.display = 'block';
+    }
     if (config.countdownOverrideMs && !countdownOverride) {
       countdownOverride = Tracker.createCountdownOverride(config.countdownOverrideMs);
       const note = document.getElementById('countdownOverrideNote');
@@ -288,7 +432,7 @@
       note.style.display = 'inline-flex';
     }
     const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
-    renderTiers(windows);
+    renderTiers(windows, stats.total);
     // The watcher needs where the clock sits relative to the window — before,
     // inside, or past it — so a sighting logged just outside the range still
     // counts (see the grace period in createPredictionWatcher).

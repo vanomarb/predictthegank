@@ -23,6 +23,11 @@ Node/Express + SQLite backend, plain JS frontend, no public sign-up.
   swing-and-a-miss animation for a wrong prediction (`npm run build:miss`)
 - `scripts/generate-fire-lottie.js` — regenerates `public/fire.lottie.json`, the
   flames around every toast (`npm run build:fire`)
+- `scripts/generate-logo.js` — rebuilds `public/logo.png` and `public/favicon.png`
+  from `public/icon.jpg` (`npm run build:logo`). The source is a 260KB white-backed
+  JPEG; this trims it to the artwork, resamples, and takes alpha from how dark
+  each pixel is, so the mark has a transparent background and `dark:invert` turns
+  it clean white on the dark theme. Replace `icon.jpg` and re-run to change the logo
 - `scripts/generate-timer-typeface.js` — regenerates `public/timer-typeface.json`,
   the 12-glyph Poppins subset the 3D countdown extrudes (`npm run build:typeface`).
   Needs the `opentype.js` devDependency and network access; the output is
@@ -46,6 +51,64 @@ node server.js
 
 Once you're an admin, use the "Generate invite code" button in the app to
 invite each coworker. Each code is single-use.
+
+## Deploying to Vercel
+
+`vercel.json` and `api/index.js` are all the configuration needed. Two details
+in them are deliberate and worth knowing before you change either:
+
+- **Everything routes to the function.** `routes` sends every path to
+  `api/index.js`, which is the same Express app `node server.js` runs. Vercel
+  would otherwise serve `public/` itself, and `index.html`/`admin.html` cannot be
+  served statically: each carries an inline `<script type="importmap">` that the
+  CSP only allows with a per-request nonce the server stamps in.
+- **The cron runs once a day, at the end of the working day**, and recomputes the
+  Gemini prediction (see below).
+
+Set the environment variables from `.env.example` in the Vercel project
+settings. `CRON_SECRET` is required for the cron job to run at all.
+
+### How many phases a day gets
+
+The number of roam phases is decided by the data, not fixed. An hour becomes a
+phase when it holds at least 10% of all sightings **and** at least 40% of the
+busiest hour's count; the busiest hour is always kept, and a ceiling of six
+stops the list turning into a log. So one busy hour gives one phase, four
+genuine clusters give four, and a strong peak with a scattered tail gives one
+rather than dressing two-sighting hours up as predictions.
+
+The ceiling (`PHASE_CEILING` in `routes/sightings.js`) is passed into
+`computePhases` as a parameter rather than read from the constant. That is
+deliberate: **if this ever becomes a product with accounts rather than one
+team's toy, this is the natural thing to meter** — a free tier capped at three
+phases, paid tiers up to the full ceiling — and threading a per-plan value
+through the caller needs no change to the statistics. Nothing is gated today.
+
+### The daily prediction refresh
+
+The Gemini-refined prediction is recomputed by one scheduled call to
+`/api/cron/refresh-prediction`, not by anything on a request path. Logging a
+sighting used to trigger it, which meant one Gemini call per log to re-answer a
+question whose answer barely moves — and a prediction that could change under a
+reader mid-afternoon. Once a day, after the last window has closed, gives one
+call on complete data and a prediction that holds still while people read it.
+
+The schedule in `vercel.json` is **UTC**, and Vercel Hobby projects get one run
+per day. `0 10 * * *` is 6pm in `Asia/Manila`; set it to whatever
+`WORK_HOURS_END` is in your `TIMEZONE`. Get it wrong and the server says so at
+boot rather than leaving you to notice the prediction refreshing at lunchtime.
+Weekends are skipped inside the route, not in the schedule, so the work days stay
+configured in one place (`WORK_DAYS`).
+
+To run it by hand:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  https://your-app.vercel.app/api/cron/refresh-prediction
+```
+
+Until the first run, the app serves its built-in statistical prediction — the
+Gemini one is a refinement on top, never a dependency.
 
 ## Deploying to your own VPS
 
@@ -146,6 +209,17 @@ sudo ufw enable
 ```
 
 ### 6. Backups
+
+### The daily prediction refresh
+
+Outside Vercel there is no scheduler, so add the same daily call to the server's
+own crontab — at the end of the working day, on the server's clock:
+
+```cron
+0 18 * * 1-5 curl -sf -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refresh-prediction
+```
+
+The route skips non-work days on its own, so the `1-5` above is belt and braces.
 
 The whole dataset is one file: `data/hr_tracker.db`. A simple cron job
 copying it somewhere (or `sqlite3 data/hr_tracker.db ".backup backup.db"` on
