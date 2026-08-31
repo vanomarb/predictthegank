@@ -125,6 +125,8 @@
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Team</button>
       <button data-tab="invites" id="invitesTabBtn" type="button" style="display:none"
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Invites</button>
+      <button data-tab="config" type="button"
+              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Config</button>
     </nav>
 
     <section id="panel-activity" data-active class="hidden data-active:block">
@@ -136,6 +138,8 @@
                 class="my-1.5 block h-40 w-full max-w-[560px] cursor-default touch-none [-webkit-tap-highlight-color:transparent]"></canvas>
         <p id="countdownNow" style="display:none;"
            class="my-1.5 animate-pulse-text text-[22px] font-bold tabular-nums tracking-[-0.01em] text-bad">HAPPENING NOW</p>
+        <p id="dayDoneNote" style="display:none;"
+           class="my-1.5 text-[22px] font-bold tracking-[-0.01em] text-fg">That&rsquo;s every predicted roam for today</p>
         <p id="countdownSr" class="sr-only" role="status" aria-live="polite">--:--:--</p>
         <p id="countdownOverrideNote" style="display:none;" class="inline-flex items-center gap-1.5 rounded-full border border-dashed border-amber-500 bg-[rgba(242,169,59,0.1)] px-[9px] py-1 text-[11px] uppercase tracking-[0.08em] text-amber-300"></p>
         <p id="windowLabel" class="mb-1.5 text-[13px] tabular-nums text-fg-muted"></p>
@@ -188,6 +192,94 @@
                   class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">New invite</button>
         </div>
         <div id="inviteList"></div>
+      </div>
+    </section>
+
+    <!-- CONFIG.
+         Everything the prediction machinery runs on, editable here, except:
+         secrets (reported set/not-set, never read), and the cron schedule, which
+         lives in vercel.json and is deployed - a control for it would be lying.
+         Each field says where its value came from: this form, the environment,
+         or the built-in default. -->
+    <section id="panel-config" class="hidden data-active:block">
+      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
+        <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Serving</p>
+            <p id="cfServing" class="mt-1 text-[15px] font-semibold text-fg">&mdash;</p>
+            <p id="cfServingNote" class="mt-0.5 text-[11px] text-fg-faint"></p>
+          </div>
+          <div class="flex gap-2">
+            <button id="cfRefreshBtn" type="button" class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-2.5 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50">Run analysis now</button>
+            <button id="cfReloadBtn" type="button" class="cursor-pointer rounded-md border border-line-strong bg-transparent px-[14px] py-2.5 text-sm font-semibold text-fg-muted transition-colors duration-150 hover:border-line hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-50">Reload</button>
+          </div>
+        </div>
+
+        <div class="grid gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">AI model</p>
+            <select id="cfModel" class="mt-1.5 w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="AI model"></select>
+            <p id="cfModelSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Timezone</p>
+            <select id="cfTimeZone" class="mt-1.5 w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="Timezone"></select>
+            <p id="cfTimeZoneSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Working day</p>
+            <div class="mt-1.5 flex items-center gap-2">
+              <select id="cfWorkStart" class="w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="Work day start"></select>
+              <span class="text-[13px] text-fg-faint">to</span>
+              <select id="cfWorkEnd" class="w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="Work day end"></select>
+            </div>
+            <p id="cfWorkSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Max phases</p>
+            <select id="cfPhaseCeiling" class="mt-1.5 w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="Maximum phases"></select>
+            <p id="cfPhaseSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+          <div class="sm:col-span-2">
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Work days</p>
+            <div id="cfWorkDays" class="mt-1.5 flex flex-wrap gap-1.5" data-day-class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1.5 text-[12px] text-fg-muted has-checked:border-amber-500 has-checked:bg-[rgba(242,169,59,0.1)] has-checked:text-amber-300"></div>
+            <p id="cfWorkDaysSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+          <div class="sm:col-span-2">
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Breaks &mdash; never predicted in</p>
+            <input id="cfBreaks" type="text" class="mt-1.5 w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" spellcheck="false"
+                   placeholder="12:00-13:00,15:15-15:30" aria-label="Break times">
+            <p id="cfBreaksSrc" class="mt-1 text-[11px] text-fg-faint"></p>
+          </div>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-5">
+          <button id="cfSaveBtn" type="button" class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-2.5 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50">Save</button>
+          <button id="cfResetBtn" type="button" class="cursor-pointer rounded-md border border-line-strong bg-transparent px-[14px] py-2.5 text-sm font-semibold text-fg-muted transition-colors duration-150 hover:border-line hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-50">Reset all to environment</button>
+          <p id="cfMsg" class="text-[12px] text-fg-muted" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="mt-6 grid gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Provider</p>
+            <p id="cfProvider" class="mt-1 text-[13px] text-fg">&mdash;</p>
+            <p id="cfApi" class="mt-0.5 font-mono text-[11px] text-fg-faint">&mdash;</p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">API key &middot; cron secret</p>
+            <p id="cfSecrets" class="mt-1 text-[13px] text-fg">&mdash;</p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Scheduled refresh</p>
+            <p id="cfCron" class="mt-1 text-[13px] text-fg">&mdash;</p>
+            <p id="cfCronNote" class="mt-0.5 text-[11px] text-fg-faint"></p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Last analysis</p>
+            <p id="cfLast" class="mt-1 text-[13px] text-fg">&mdash;</p>
+            <p id="cfLastNote" class="mt-0.5 text-[11px] text-fg-faint"></p>
+          </div>
+        </div>
       </div>
     </section>
   </main>

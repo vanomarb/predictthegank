@@ -228,8 +228,15 @@ const Tracker = (() => {
           detail: useSmart
             ? w.rationale
             : `${w.count} of ${stats.total} logged sightings landed in this window (${w.pct}%).`,
-          badge: useSmart ? `AI \u00b7 ${Math.round((w.confidence || 0) * 100)}% confident` : 'Statistical pattern',
+          // No text badge for an AI phase any more: the mark on the card says
+          // where the numbers came from, and "AI · 85% confident" sat in a slot
+          // the all-time count almost always occupied anyway, so it was rarely
+          // even rendered.
+          badge: useSmart ? '' : 'Statistical pattern',
           isSmart: useSmart,
+          // 0-100. The model's confidence in the RANGE, a different question
+          // from the likelihood it put on each minute inside it.
+          confidence: useSmart ? Math.round((w.confidence || 0) * 100) : null,
         };
       })
       .sort((a, b) => a.hourStart - b.hourStart);
@@ -323,14 +330,33 @@ const Tracker = (() => {
   // Returns 'hit', 'missed', or null for "no verdict yet".
   function momentOutcome(row, todayMinutes, nowMin, opts) {
     const { todayIsWorkDay = true, dayOffset = 0 } = opts || {};
+    // Is this card a record of today?
+    //
+    // dayOffset alone is not enough: once the day is done the countdown points
+    // at tomorrow while the card is still showing today's phases, and reading
+    // the offset there wiped every HIT and MISSED badge off the finished day at
+    // the moment they became the whole point of the card. A window that knows
+    // it is showing today says so; anything else keeps the old behaviour.
+    const { showingToday = dayOffset === 0 } = opts || {};
     // Nothing is being predicted for today on a day off, and a phase carried
     // over to tomorrow has not happened yet either.
-    if (!todayIsWorkDay || dayOffset > 0) return null;
+    if (!todayIsWorkDay || !showingToday) return null;
     if (row == null || row.windowFrom == null || row.windowTo == null) return null;
     if (nowMin < row.windowTo) return null; // still open
     const logged = todayMinutes || [];
     const hit = logged.some((m) => m >= row.windowFrom && m < row.windowTo);
     return hit ? 'hit' : 'missed';
+  }
+
+  // The day's score: how many of the predicted minutes HR actually walked in.
+  // Wildcards count — they are predictions the card makes and the countdown
+  // runs to, so they are predictions the summary is answerable for.
+  function dayTally(windows, todayMinutes, nowMin) {
+    const moments = allMoments(windows).map((x) => x.moment);
+    const opts = { todayIsWorkDay: true, showingToday: true };
+    const hits = moments
+      .filter((m) => momentOutcome(m, todayMinutes, nowMin, opts) === 'hit').length;
+    return { hits, total: moments.length, logged: (todayMinutes || []).length };
   }
 
   // Minutes since midnight on the office clock.
@@ -355,6 +381,15 @@ const Tracker = (() => {
   // way to see the prediction drifting rather than simply failing.
   function loggedInPhase(w, todayMinutes) {
     if (!w || w.hourStart == null || w.hourEnd == null) return [];
+    // TODAY's sightings, so only a card describing today may show them.
+    //
+    // Past work hours the countdown moves to tomorrow and the cards go with it,
+    // but these rows stayed behind: at 7pm the page read "tomorrow · 3 phases"
+    // and then, inside tomorrow's 9-10am card, "9:12am landed on the Sure
+    // prediction — Hit". Today's record presented as part of tomorrow's plan.
+    // Gated here, at the source, so no caller can attribute a sighting to a day
+    // it did not happen on.
+    if (w.showingToday === false) return [];
     const from = w.hourStart * 60;
     const to = w.hourEnd * 60;
     const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
@@ -627,6 +662,29 @@ const Tracker = (() => {
     if (featuredIndex === -1) featuredIndex = 0;
 
     const featured = classified[featuredIndex];
+
+    // THE DAY IS DONE: a work day, still inside work hours, but every predicted
+    // moment is already behind us.
+    //
+    // Without this the page rolled straight on to tomorrow's first moment while
+    // still showing today's card, so at 5pm this morning's 9-10am phase sat
+    // open, highlighted and un-struck above a countdown of sixteen hours. The
+    // page was describing two different days at once.
+    //
+    // There is nothing left to count down to today, so the hero says that
+    // instead, and the phases read as the finished record they are.
+    //
+    // "+ 60" and not "> nowSec": a moment is not behind us while we are standing
+    // in it. Asking only whether a target is still in the future made the day
+    // read as done during the last predicted MINUTE itself — at 4:35:20, with
+    // the 4:35 wildcard live, the page put up the end-of-day summary instead of
+    // HAPPENING NOW, hiding the prediction at the one moment it was worth
+    // anything. Same 60-second window the hit rule and the countdown use.
+    const nothingAheadToday = todayIsWorkDay
+      && !allMoments(classified).some((x) => nowSec < x.moment.targetSec + 60);
+    const wh = workHours || CONFIG_FALLBACK.workHours;
+    const insideWorkHours = nowSec >= wh.start * 3600 && nowSec < wh.end * 3600;
+    const dayDone = nothingAheadToday && insideWorkHours;
     // Which DAY the label says, measured from the moment the countdown is
     // actually pointing at — not from the phase's sure moment.
     //
@@ -638,9 +696,37 @@ const Tracker = (() => {
     const dayOffset = upcoming ? upcoming.dayOffset : 0;
     const dayLabel = dayOffsetLabel(dayOffset, timeZone);
 
-    return classified.map((w, i) => (i === featuredIndex
-      ? { ...w, featured: true, dayOffset, dayLabel, todayIsWorkDay }
-      : { ...w, featured: false, dayOffset: null, dayLabel: '', todayIsWorkDay }));
+    // dayOffset/dayLabel/dayDone describe the PAGE, not one window, so every
+    // window carries them: a card cannot decide what to strike until it knows
+    // which day it is being asked to describe.
+    //
+    // showingToday, highlight and struck are the three render decisions, made
+    // here rather than in each page, because letting them drift apart is
+    // precisely how the card came to show one day's strikes under another day's
+    // countdown:
+    //   - showingToday: the card is a record of TODAY. False only once the
+    //     countdown has moved to another day, which is also what stops the
+    //     hit/miss verdicts being applied to a day that has not happened yet.
+    //   - highlight: nothing is highlighted once the day is done, because there
+    //     is no "next" left to point at.
+    //   - struck: a range is crossed out only while the card is showing today.
+    //     Past work hours the countdown is on tomorrow, and tomorrow's 9am has
+    //     not been and gone.
+    const showingToday = dayDone || dayOffset === 0;
+    return classified.map((w, i) => {
+      const isFeatured = i === featuredIndex;
+      return {
+        ...w,
+        featured: isFeatured,
+        highlight: isFeatured && !dayDone,
+        struck: w.passed && showingToday && !(isFeatured && !dayDone),
+        showingToday,
+        dayOffset,
+        dayLabel,
+        dayDone,
+        todayIsWorkDay,
+      };
+    });
   }
 
   function peakLabel(stats) {
@@ -1185,7 +1271,7 @@ const Tracker = (() => {
     formatCountdown, getConfig, getTimezone, initThemeToggle,
     lottieLib, toast, confettiBurst, initAdvisory,
     createPredictionWatcher,
-    workHoursState, currentDayInTZ,
+    workHoursState, currentDayInTZ, dayTally,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
     initNotifyToggle, createCountdownAlerter, ALERT_THRESHOLDS_S,
     createCountdownOverride,

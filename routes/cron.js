@@ -26,7 +26,7 @@
 
 const express = require('express');
 const { recomputeSmartPrediction } = require('./sightings');
-const { getWorkHours } = require('../services/work-hours');
+const { getWorkHours, getTimeZone } = require('../services/work-hours');
 
 const router = express.Router();
 
@@ -59,7 +59,7 @@ router.get('/refresh-prediction', async (req, res) => {
   // schedule in vercel.json is daily rather than Mon-Fri. The weekend skip
   // belongs here anyway: the work days are configuration, and configuration
   // that lives in two places drifts.
-  const timeZone = process.env.TIMEZONE || 'UTC';
+  const timeZone = getTimeZone();
   const workHours = getWorkHours();
   const day = currentDayInTZ(timeZone);
   if (!workHours.days.includes(day)) {
@@ -69,7 +69,9 @@ router.get('/refresh-prediction', async (req, res) => {
 
   const result = await recomputeSmartPrediction();
   console.log('[cron] refresh-prediction:', JSON.stringify(result));
-  return res.json({ ok: result.ok, ...result });
+  // A failed refresh answers with a failing status, so it shows as a failure in
+  // Vercel's cron log instead of a green tick over a job that did nothing.
+  return res.status(result.ok ? 200 : 500).json({ ok: result.ok, ...result });
 });
 
 module.exports = router;

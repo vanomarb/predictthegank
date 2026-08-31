@@ -1,9 +1,10 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const { getSmartWindows, sanitizeWindows } = require('../services/gemini');
+const { getSmartWindows, sanitizeWindows, sanitizeWildcards } = require('../services/gemini');
+const settings = require('../services/settings');
 const { getOrCreateSystemAccountId } = require('../services/system-accounts');
-const { getWorkHours, getBreaks } = require('../services/work-hours');
+const { getWorkHours, getBreaks, getTimeZone, getPhaseCeiling } = require('../services/work-hours');
 
 // The confidence labels for the moments inside a range, strongest first. They
 // live here rather than in services/gemini.js because the model no longer
@@ -12,28 +13,44 @@ const TIERS = ['sure', 'likely', 'maybe'];
 
 const router = express.Router();
 const DEDUP_WINDOW_SECONDS = 2 * 60;
-const TIMEZONE = process.env.TIMEZONE || 'UTC';
 const SIGHTING_LOCK_KEY = 8817231; // arbitrary fixed advisory-lock key for the sightings resource
 const OFFICE_HOURS = { start: 9, end: 18 }; // 9:00am-6:00pm
 
 const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-const dayHourFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: TIMEZONE,
-  weekday: 'short',
-  hour: 'numeric',
-  hour12: false,
-});
-const dateMinuteFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: TIMEZONE,
-  year: 'numeric', month: '2-digit', day: '2-digit',
-  hour: 'numeric', minute: 'numeric', hour12: false,
-});
+
+// Memoised per timezone rather than built once at module load.
+//
+// Building an Intl.DateTimeFormat is expensive enough that these were created
+// once and reused across every request — which was fine while the timezone was
+// a constant read from the environment. It is a setting now, so a formatter
+// pinned at load time would keep bucketing the heatmap in the old zone until the
+// process restarted, and on Vercel that could be hours. Keyed on the zone, so
+// the cost is still paid once per zone and not once per timestamp.
+const formatterCache = new Map();
+
+function formattersFor(timeZone) {
+  let pair = formatterCache.get(timeZone);
+  if (!pair) {
+    pair = {
+      dayHour: new Intl.DateTimeFormat('en-US', {
+        timeZone, weekday: 'short', hour: 'numeric', hour12: false,
+      }),
+      dateMinute: new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: 'numeric', minute: 'numeric', hour12: false,
+      }),
+    };
+    formatterCache.set(timeZone, pair);
+  }
+  return pair;
+}
 
 // Computes {day, hour} for a unix-seconds timestamp in TIMEZONE, instead of the
 // server process's local timezone (which would silently shift on Vercel, where
 // functions run in UTC regardless of where the team actually is).
 function dayHourInTZ(ts) {
-  const parts = dayHourFormatter.formatToParts(new Date(ts * 1000));
+  const parts = formattersFor(getTimeZone()).dayHour.formatToParts(new Date(ts * 1000));
   const weekday = parts.find((p) => p.type === 'weekday').value;
   const hour = parseInt(parts.find((p) => p.type === 'hour').value, 10) % 24;
   return { day: WEEKDAY_INDEX[weekday], hour };
@@ -43,7 +60,7 @@ function dayHourInTZ(ts) {
 // unix-seconds timestamp in TIMEZONE — used by medianGapMinutes to find gaps
 // between same-day sightings down to the minute, not just the hour.
 function dateMinutesInTZ(ts) {
-  const parts = dateMinuteFormatter.formatToParts(new Date(ts * 1000));
+  const parts = formattersFor(getTimeZone()).dateMinute.formatToParts(new Date(ts * 1000));
   const get = (type) => parts.find((p) => p.type === type).value;
   const date = `${get('year')}-${get('month')}-${get('day')}`;
   const hour = parseInt(get('hour'), 10) % 24;
@@ -377,7 +394,9 @@ const PHASE_MIN_OF_PEAK = 0.4;    // >= 40% of the busiest hour
 // exactly that reason: computePhases takes the limit rather than reading the
 // constant, so a per-plan value can be threaded through from the caller without
 // touching the statistics. Nothing here is gated today.
-const PHASE_CEILING = 6;
+// The ceiling is a setting now — see services/settings.js. Read at the point of
+// use, because a value captured at module load would ignore an admin's change
+// until the process restarted.
 
 // Which hours earn a phase, in clock order. Split out from computePhases so the
 // selection rule can be read — and tested — on its own.
@@ -405,7 +424,7 @@ function selectPhaseHours(hourTotals, total, breaks, limit) {
 // "next" is a question about the time of day, not about which hour has the most
 // sightings; the count rides along on each phase so the page can still say how
 // much is behind it.
-function computePhases(heatmap, minutesOfDay, total, medianGap, breaks, limit = PHASE_CEILING) {
+function computePhases(heatmap, minutesOfDay, total, medianGap, breaks, limit = getPhaseCeiling()) {
   const hourTotals = Array(24).fill(0);
   heatmap.forEach((dayRow) => dayRow.forEach((count, hour) => { hourTotals[hour] += count; }));
 
@@ -423,9 +442,30 @@ function computePhases(heatmap, minutesOfDay, total, medianGap, breaks, limit = 
   return withWildcards(phases, medianGap, breaks, minutesOfDay, total);
 }
 
-async function readStoredSmartWindows() {
-  const row = await db.one('SELECT windows FROM smart_predictions WHERE id = true');
-  return row ? row.windows : null;
+// The stored column holds { windows, wildcards } now. A row written by an older
+// deploy is a bare array of windows with no moments in them — readable, but
+// every window will be dropped by the sanitizer for having no usable moment, and
+// the page falls back to the statistical prediction until the next cron run
+// replaces the row. Self-healing within a day, and never a half-AI answer.
+async function readStoredSmartPrediction() {
+  const row = await db.one(
+    'SELECT windows, sightings_total, computed_at FROM smart_predictions WHERE id = true'
+  );
+  if (!row || !row.windows) return null;
+  const stored = typeof row.windows === 'string' ? JSON.parse(row.windows) : row.windows;
+  // The row's own metadata travels with it, so the admin dashboard can say when
+  // this answer was produced and from how much data without a second query.
+  const meta = { computedAt: row.computed_at, sightingsTotal: row.sightings_total };
+  if (Array.isArray(stored)) return { ...meta, windows: stored, wildcards: [], legacy: true };
+  return {
+    ...meta,
+    windows: stored.windows || [],
+    wildcards: stored.wildcards || [],
+    // Which model wrote it, which is not necessarily the one selected now:
+    // change the model at 2pm and the page keeps showing the morning's answer
+    // until the next refresh.
+    model: stored.model || null,
+  };
 }
 
 // Recomputes the Gemini analysis from current data and persists it, so GET
@@ -454,12 +494,18 @@ async function recomputeSmartPrediction() {
       total,
       workHours: getWorkHours(),
       breaks: getBreaks(),
-      timeZone: TIMEZONE,
-      maxWindows: PHASE_CEILING,
+      timeZone: getTimeZone(),
+      maxWindows: getPhaseCeiling(),
+      // Whichever model is in force: an admin's dashboard choice, else
+      // GEMINI_MODEL, else the built-in default. See services/settings.js.
+      model: settings.get('aiModel'),
     });
-    // null means the feature is off (no API key) or the call failed; either way
-    // the previously stored windows stay as they are.
-    if (!smart) return { ok: true, skipped: 'gemini returned nothing', total };
+    // Either way the previously stored windows stay as they are — but the two
+    // cases have to report differently. "Off" is a choice; "failed" is a
+    // problem, and reporting a failure as ok: true is how every Gemini call
+    // being rejected went unnoticed across every deploy.
+    if (!smart) return { ok: true, skipped: 'gemini is not configured', total };
+    if (smart.error) return { ok: false, error: smart.error, total };
     await db.query(
       `INSERT INTO smart_predictions (id, windows, sightings_total, computed_at)
        VALUES (true, $1, $2, EXTRACT(EPOCH FROM now())::bigint)
@@ -467,9 +513,23 @@ async function recomputeSmartPrediction() {
          windows = EXCLUDED.windows,
          sightings_total = EXCLUDED.sightings_total,
          computed_at = EXCLUDED.computed_at`,
-      [JSON.stringify(smart.windows), total]
+      [JSON.stringify({
+        windows: smart.windows,
+        wildcards: smart.wildcards || [],
+        model: smart.model || null,
+      }), total]
     );
-    return { ok: true, windows: smart.windows.length, total };
+    const moments = smart.windows.reduce((n, w) => n + (w.moments || []).length, 0);
+    return {
+      ok: true,
+      windows: smart.windows.length,
+      moments,
+      wildcards: (smart.wildcards || []).length,
+      // Named in the report because the only person who reads a cron log wants
+      // to know which model answered.
+      model: smart.model || null,
+      total,
+    };
   } catch (e) {
     console.error('[gemini] failed to persist smart windows:', e.message);
     return { ok: false, error: e.message };
@@ -618,40 +678,69 @@ router.get('/stats', optionalAuth, async (req, res, next) => {
     const {
       total, heatmap, byPerson, minutesOfDay, todayMinutes, medianGap, windows,
     } = await buildHeatmapAndPrediction();
-    const stored = await readStoredSmartWindows();
+    const stored = await readStoredSmartPrediction();
 
-    // Gemini is asked for an hour range and nothing finer — a model guessing at
-    // a minute would be inventing precision. The moments inside the range are
-    // derived here from the same sightings the statistical phases use, so both
-    // kinds of window are built the same way and only the RANGE differs.
+    // THE WHOLE PREDICTION IS THE MODEL'S. Its ranges, its minutes, its
+    // percentages, its wildcards — nothing here recomputes any of them.
+    //
+    // They used to be recomputed: Gemini was asked only for the hour range and
+    // the statistical engine filled in the rest, which meant that whenever the
+    // model picked the hours the counts already ranked highest — with a clean
+    // pattern, every time — the AI prediction came out byte-identical to the
+    // statistical one and the card said "AI" over numbers the model had never
+    // produced. Two analyses that cannot disagree are one analysis.
+    //
+    // The one value still computed is `count`: how many sightings have actually
+    // landed in that range, all-time. That is a measurement of the past, not a
+    // prediction of the day, and the card labels it "all-time".
     //
     // Sanitized again on the way out, not only on the way in. What is stored was
     // written by a previous deploy under whatever rules were in force then;
-    // change WORK_HOURS_END or BREAK_TIMES and yesterday's stored ranges can
+    // change WORK_HOURS_END or BREAK_TIMES and yesterday's stored answer can
     // suddenly straddle a break or sit after closing. Re-checking here costs
     // nothing and means a config change takes effect immediately rather than at
     // the next cron run.
     const breaks = getBreaks();
     const workHours = getWorkHours();
-    const smartWindows = Array.isArray(stored)
-      ? withWildcards(
-        sanitizeWindows(stored, { workHours, breaks, max: PHASE_CEILING })
-          .map((w) => buildPhase({
-            hourStart: w.predictedHourStart,
-            hourEnd: w.predictedHourEnd,
-            count: minutesOfDay.filter((m) => m >= w.predictedHourStart * 60 && m < w.predictedHourEnd * 60).length,
-            total,
-            minutesOfDay,
-            breaks,
-            extra: { confidence: w.confidence, rationale: w.rationale },
-          }))
-          .filter((p) => p.tiers.length > 0),
-        medianGap,
-        breaks,
-        minutesOfDay,
-        total,
-      )
-      : stored;
+    let smartWindows = null;
+    if (stored) {
+      const clean = sanitizeWindows(stored.windows, { workHours, breaks, max: getPhaseCeiling() });
+      const wilds = sanitizeWildcards(stored.wildcards, { workHours, breaks, windows: clean });
+      smartWindows = clean.map((w, i) => {
+        const from = w.predictedHourStart * 60;
+        const to = w.predictedHourEnd * 60;
+        const moments = w.moments.map((m) => ({
+          ...m,
+          source: 'ai',
+          // The 59-second rule is the app's, not the model's: a prediction of
+          // 14:07 is met from 14:07:00 to 14:07:59 and missed at 14:08. Applied
+          // here so an AI moment and a statistical one are judged identically.
+          ...hitWindow(m.hour * 60 + m.minute),
+        }));
+        // The wildcard for the gap AFTER this phase, so it renders between this
+        // card and the next exactly as the statistical one does.
+        const wild = wilds.find((x) => x.afterWindow === i);
+        return {
+          hourStart: w.predictedHourStart,
+          hourEnd: w.predictedHourEnd,
+          count: minutesOfDay.filter((m) => m >= from && m < to).length,
+          total,
+          confidence: w.confidence,
+          rationale: w.rationale,
+          tiers: wild
+            ? [...moments, {
+              tier: 'wildcard',
+              hour: wild.hour,
+              minute: wild.minute,
+              pct: wild.pct,
+              note: wild.note,
+              source: 'ai',
+              ...hitWindow(wild.hour * 60 + wild.minute),
+            }]
+            : moments,
+        };
+      });
+    }
 
     const payload = { total, heatmap, windows, smartWindows, todayMinutes };
     if (req.user) payload.byPerson = byPerson;
@@ -674,6 +763,7 @@ router.get('/stats', optionalAuth, async (req, res, next) => {
 module.exports = {
   router,
   recomputeSmartPrediction,
+  readStoredSmartPrediction,
   prediction: {
     HIT_TOLERANCE_MIN,
     QUARTER_MIN,

@@ -10,7 +10,11 @@ const path = require('path');
 const authRoutes = require('./routes/auth');
 const { router: sightingsRoutes } = require('./routes/sightings');
 const cronRoutes = require('./routes/cron');
-const { getWorkHours, getBreaks } = require('./services/work-hours');
+const adminRoutes = require('./routes/admin');
+const { getWorkHours, getBreaks, getTimeZone } = require('./services/work-hours');
+// The schedule arithmetic lives in one place now, shared with the admin
+// dashboard, which was about to grow a second copy of it.
+const { utcHourFor, refreshJob } = require('./services/cron-schedule');
 
 // COUNTDOWN_OVERRIDE_MS forces the hero countdown to a fixed starting value, in
 // milliseconds, so the states that only happen in the last minute of a window —
@@ -136,11 +140,28 @@ const anonymousLogLimiter = rateLimit({
 });
 app.use('/api/sightings/anonymous', anonymousLogLimiter);
 
+// The dashboard's "run the analysis now" button spends a real API call at a
+// third-party, and the free tier allows twenty a minute. Admin-only already, but
+// an admin holding down a button is still an admin running up a bill, and a
+// prediction only moves once a day anyway.
+const aiRefreshLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'The analysis was run recently — give it a few minutes.' },
+});
+app.use('/api/admin/config/refresh', aiRefreshLimiter);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/sightings', sightingsRoutes);
 // Scheduled work, called from outside. Authorized by CRON_SECRET, not a cookie
 // — see routes/cron.js.
 app.use('/api/cron', cronRoutes);
+// The dashboard's window onto the prediction machinery, and the model knob.
+// Admin-only inside the router itself; the refresh route spends real money at a
+// third-party API, so it is rate-limited above as well.
+app.use('/api/admin', adminRoutes);
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
@@ -149,7 +170,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // working day rather than each viewer's local clock.
 app.get('/api/config', (req, res) => {
   res.json({
-    timezone: process.env.TIMEZONE || 'UTC',
+    timezone: getTimeZone(),
     workHours: getWorkHours(),
     breaks: getBreaks(),
     countdownOverrideMs: getCountdownOverrideMs(),
@@ -158,36 +179,31 @@ app.get('/api/config', (req, res) => {
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: 'Something went wrong.' });
+  // A malformed request body is the CALLER's mistake, and express.json marks it
+  // as such with statusCode 400. Flattening everything to 500 told an API client
+  // "the server is broken" when the truth was "your JSON has a typo in it", and
+  // sent someone looking in the wrong place. Only client errors are passed
+  // through; anything without a 4xx on it stays a 500, and the message stays
+  // generic either way so nothing internal leaks.
+  const status = Number.isInteger(err.status || err.statusCode)
+    && (err.status || err.statusCode) >= 400
+    && (err.status || err.statusCode) < 500
+    ? (err.status || err.statusCode)
+    : 500;
+  res.status(status).json({
+    error: status === 400 ? 'That request could not be read.' : 'Something went wrong.',
+  });
 });
-
-// The UTC hour at which the office clock reads `localHour` today. Whole-hour
-// offsets only, which covers every zone this is likely to run in; a half-hour
-// zone (Asia/Kolkata) rounds, and the warning below says so.
-function utcHourFor(localHour, timeZone) {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: 'numeric', hour12: false })
-    .formatToParts(now);
-  const here = Number.parseInt(parts.find((p) => p.type === 'hour').value, 10) % 24;
-  const offset = (here - now.getUTCHours() + 24) % 24;
-  return ((localHour - offset) % 24 + 24) % 24;
-}
 
 // vercel.json's cron schedule is a fixed UTC string; when the working day ends
 // is configuration. Change TIMEZONE or WORK_HOURS_END and the two drift apart
 // with no symptom other than the prediction refreshing at the wrong time of day,
 // which nobody would ever notice. So they are compared out loud at boot.
 function warnIfCronScheduleDrifted() {
-  let config;
-  try {
-    config = JSON.parse(fs.readFileSync(path.join(__dirname, 'vercel.json'), 'utf8'));
-  } catch (e) {
-    return; // no vercel.json (a VPS deploy) — nothing to check against
-  }
-  const job = (config.crons || []).find((c) => /refresh-prediction/.test(c.path));
-  if (!job) return;
+  const job = refreshJob();
+  if (!job) return; // no vercel.json (a VPS deploy) — nothing to check against
   const scheduled = Number.parseInt(String(job.schedule).split(' ')[1], 10);
-  const timeZone = process.env.TIMEZONE || 'UTC';
+  const timeZone = getTimeZone();
   const want = utcHourFor(getWorkHours().end, timeZone);
   if (scheduled === want) return;
   console.warn(`vercel.json runs the prediction refresh at ${scheduled}:00 UTC, but the working `
@@ -195,19 +211,47 @@ function warnIfCronScheduleDrifted() {
     + `Change the schedule to "0 ${want} * * *" (or ignore this on a half-hour-offset timezone).`);
 }
 
+// AT MODULE LOAD, not inside listen().
+//
+// These checks used to live in the listen() callback, under
+// `require.main === module`. On Vercel nothing calls listen — api/index.js
+// requires this file and hands the app to the platform — so the one set of
+// warnings that says "your scheduled job cannot work" never printed in the only
+// environment where the scheduled job is someone else's to trigger. They ran
+// faithfully on the laptop, where the developer could already see everything,
+// and went silent in production.
+//
+// Cheap, synchronous, and once per cold start.
+function reportConfigProblems() {
+  const override = getCountdownOverrideMs();
+  if (override !== null) {
+    console.warn(`COUNTDOWN_OVERRIDE_MS=${override} is set — the countdown on both pages is FAKE `
+      + '(starts at that value and ticks to zero on load). Unset it for real predictions.');
+  }
+  if (!process.env.CRON_SECRET) {
+    console.warn('CRON_SECRET is not set — /api/cron/refresh-prediction will refuse every call, '
+      + 'so the Gemini prediction will never be recomputed. On Vercel, set it in the project\u2019s '
+      + 'environment variables: the platform then sends it as a Bearer token with every cron run.');
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn('GEMINI_API_KEY is not set — the daily refresh will run and do nothing, leaving '
+      + 'the statistical prediction in place.');
+  }
+  warnIfCronScheduleDrifted();
+}
+
+reportConfigProblems();
+
+// Load the stored settings before the first request rather than after it. Reads
+// never block, so without this the very first request on a cold start would
+// answer from the environment while the snapshot was still loading — briefly
+// serving the wrong working day to whoever arrived first.
+require('./services/settings').primeSettings()
+  .catch((e) => console.error('[settings] initial load failed:', e.message));
+
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Predict the Gank server listening on port ${PORT}`);
-    const override = getCountdownOverrideMs();
-    if (override !== null) {
-      console.warn(`COUNTDOWN_OVERRIDE_MS=${override} is set — the countdown on both pages is FAKE `
-        + '(starts at that value and ticks to zero on load). Unset it for real predictions.');
-    }
-    if (!process.env.CRON_SECRET) {
-      console.warn('CRON_SECRET is not set — /api/cron/refresh-prediction will refuse every call, '
-        + 'so the Gemini prediction will never be recomputed.');
-    }
-    warnIfCronScheduleDrifted();
   });
 }
 

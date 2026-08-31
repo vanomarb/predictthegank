@@ -266,6 +266,12 @@
       document.querySelectorAll('[id^="panel-"]').forEach((p) => setFlag(p, 'active', false));
       setFlag(btn, 'active', true);
       setFlag(el('panel-' + btn.dataset.tab), 'active', true);
+      // Lazily, and once. The config panel costs a live call to the provider to
+      // list models, and most sessions never open it.
+      if (btn.dataset.tab === 'config' && !cfLoaded) {
+        loadConfig();
+        loadConfigLists();
+      }
     });
   });
 
@@ -315,6 +321,9 @@
     el('logBtnLabel').textContent = open ? 'Log sighting' : 'Logging closed';
   }
 
+  // A fact about the page, not about one window — see public.js.
+  const dayDone = () => !!(phases[0] && phases[0].dayDone);
+
   // Ticks every second: shows a live countdown to the featured window's start,
   // or "HAPPENING NOW" while inside it — independent of the 5s data poll.
   // Under 60s remaining, the 3D digits pulse red for urgency.
@@ -324,6 +333,21 @@
     const next = Tracker.nextMoment(phases, timeZone, workHours);
     if (!next) return;
     if (next.window !== featured) featured = next.window;
+
+    // Today's predictions are spent but the day is not — see public.js.
+    if (dayDone() && !countdownOverride) {
+      const tally = Tracker.dayTally(phases, todayMinutes, Tracker.nowMinutes(timeZone));
+      const landed = `${tally.hits} of ${tally.total} landed`;
+      el('countdownCanvas').style.display = 'none';
+      el('countdownNow').style.display = 'none';
+      el('dayDoneNote').style.display = 'block';
+      el('featuredTierLabel').textContent = 'Today\u2019s roams · all done';
+      el('windowLabel').textContent = `${landed} · ${tally.logged} logged today`;
+      el('countdownSr').textContent = `No predicted roams left today. ${landed}.`;
+      if (timer3d) { timer3d.setText('--:--:--'); timer3d.setUrgent(false); }
+      return;
+    }
+    el('dayDoneNote').style.display = 'none';
     const { moment, window: w, dayLabel } = next;
     const pct = typeof moment.pct === 'number' ? ` · ${moment.pct}%` : '';
     el('windowLabel').textContent = `${moment.targetLabel}${dayLabel ? ` ${dayLabel}` : ''}`
@@ -381,7 +405,10 @@
 
     featured = windows.find((w) => w.featured);
     el('featuredTierLabel').textContent = `Next roam phase${featured.dayLabel ? ` · ${featured.dayLabel}` : ''}`;
-    el('featuredDetail').textContent = !featured.todayIsWorkDay
+    el('featuredDetail').textContent = featured.dayDone
+      ? 'Every predicted time has been and gone, but the day has not — logging '
+        + 'stays open. Tonight\u2019s analysis rebuilds these phases.'
+      : !featured.todayIsWorkDay
       ? `No roams expected today — the pattern only turns up on work days. Next window ${featured.dayLabel || 'soon'}.`
       : featured.dayOffset > 0
         ? `Today's windows have passed — this pattern usually repeats ${featured.dayLabel}.`
@@ -393,22 +420,30 @@
     const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.8em' }) : '';
     const wildcardOf = (w) => w.tiers.find((t) => t.tier === 'wildcard');
     // A card the reader opened must survive the poll's rebuild — see public.js.
-    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.featured);
+    // w.highlight, not w.featured — see public.js.
+    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.highlight);
     chips.innerHTML = windows.map((w, i) => `
-      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.highlight ? 'data-featured' : ''} ${w.struck ? 'data-passed' : ''}>
         <summary class="${PHASE_HEAD}">
           <span class="${PHASE_NUM}">${i + 1}</span>
           <span class="${PHASE_RANGE}">${w.timeLabel}</span>
           <span class="${PHASE_LEAD}">${w.targetLabel}</span>
           <span class="${PHASE_META}">${w.count ? `${w.count} logged` : w.badge}</span>
+          ${w.isSmart && typeof Icons !== 'undefined'
+            ? `<span class="inline-flex shrink-0 items-center text-amber-400" data-ai`
+              + ` title="Predicted by AI · ${w.confidence}% confident">`
+              + `${Icons.svg('sparkle', { size: '0.9em' })}</span>`
+            : ''}
           <span class="${PHASE_CARET}">${caret}</span>
         </summary>
         ${w.tiers.filter((t) => t.tier !== 'wildcard').map((t) => `
           <div class="${TIER_ROW}">
-            <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
-            <span class="${TIER_SUB}">${t.from ? `${t.from} in the ${t.quarter} stretch` : `${t.quarter} midpoint`}</span>
+            <span class="${TIER_TIME}" ${w.highlight && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
+            <span class="${TIER_SUB}">${t.source === 'ai'
+              ? 'AI-picked minute'
+              : (t.from ? `${t.from} in the ${t.quarter} stretch` : `${t.quarter} midpoint`)}</span>
             ${verdictBadge(t)}
-            <span class="${TIER_BADGE}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
+            <span class="${TIER_BADGE}" ${w.highlight && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
           </div>
         `).join('')}
       </details>
@@ -421,9 +456,10 @@
         </div>` : ''}
     `).join('');
 
+    // The summary's click, not the card's `toggle` — see public.js.
     chips.querySelectorAll('details[data-hour]').forEach((card) => {
-      card.addEventListener('toggle', () => {
-        openState.set(Number(card.dataset.hour), card.open);
+      card.querySelector('summary').addEventListener('click', () => {
+        openState.set(Number(card.dataset.hour), !card.open);
       });
     });
     return windows;
@@ -471,6 +507,251 @@
     // advice is about its log button.
     if (advisory) advisory.show();
   }
+  /* ============================ the Config tab ============================ */
+  //
+  // Every setting the prediction machinery runs on, editable, except two:
+  // secrets, which are reported set/not-set and never read, and the cron
+  // schedule, which lives in vercel.json and is deployed - a control for it here
+  // would be lying.
+  //
+  // Each field says where its value came from - this form, the environment, or
+  // the built-in default - because an admin whose env var appears to be ignored
+  // needs to see that something here is overriding it.
+
+  let cfLoaded = false;
+  const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  const AGO_UNITS = [[60, 'second'], [60, 'minute'], [24, 'hour'], [7, 'day']];
+
+  // "3 hours ago", from a unix timestamp in seconds. `brief` drops the absolute
+  // time, which only earns its space in the wider slots.
+  function agoLabel(seconds, brief) {
+    if (!seconds) return 'never';
+    let n = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
+    let unit = 'second';
+    for (const [size, name] of AGO_UNITS) {
+      if (n < size) { unit = name; break; }
+      n = Math.floor(n / size);
+      unit = name;
+    }
+    const rel = n === 0 ? 'just now' : `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (brief) return rel;
+    // 12-hour, office clock, like every other time the app shows.
+    const abs = new Date(seconds * 1000).toLocaleString(undefined, {
+      timeZone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+    });
+    return `${rel} \u00b7 ${abs}`;
+  }
+
+  // One writer for the form's message, so a failure's colour can never be left
+  // on the next success.
+  function cfMsg(text, bad) {
+    const box = el('cfMsg');
+    box.textContent = text;
+    box.className = `text-[12px] ${bad ? 'text-bad' : 'text-fg-muted'}`;
+  }
+
+  const h12 = (hour) => {
+    const h = ((hour % 24) + 24) % 24;
+    return `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? 'am' : 'pm'}`;
+  };
+
+  // "set here", "from TIMEZONE", "default" - the same three words everywhere, so
+  // the column reads as one thing rather than seven different phrasings.
+  function sourceLine(f) {
+    const base = f.source === 'admin' ? 'set here'
+      : f.source === 'environment' ? `from ${f.env}`
+        : 'default';
+    return f.source === 'admin' && f.changedBy
+      ? `${base} \u00b7 ${f.changedBy}, ${agoLabel(f.changedAt, true)}`
+      : base;
+  }
+
+  const fillOptions = (id, values, selected, label) => {
+    el(id).innerHTML = values.map((v) => {
+      const value = typeof v === 'object' ? v.value : v;
+      const text = typeof v === 'object' ? v.text : (label ? label(v) : v);
+      return `<option value="${value}"${String(value) === String(selected) ? ' selected' : ''}>${text}</option>`;
+    }).join('');
+  };
+
+  function renderConfig(payload) {
+    const { config: c, status: st, cron } = payload;
+
+    const ai = st.servingToPage === 'ai';
+    el('cfServing').textContent = ai ? 'AI analysis' : 'Statistical pattern';
+    el('cfServing').className = `mt-1 text-[15px] font-semibold ${ai ? 'text-good' : 'text-fg'}`;
+    // The one sentence worth keeping: WHY it is on the fallback.
+    el('cfServingNote').textContent = ai ? ''
+      : (!st.keyConfigured ? 'No API key'
+        : st.legacyRow ? 'Stored answer predates the current format'
+          : st.computedAt ? 'Stored answer survived none of the office rules'
+            : 'Nothing analysed yet');
+
+    // Hours 0-23 for the start, 1-24 for the end: a day may end at midnight.
+    fillOptions('cfWorkStart', Array.from({ length: 24 }, (_, i) => i), c.workStart.value, h12);
+    fillOptions('cfWorkEnd', Array.from({ length: 24 }, (_, i) => i + 1), c.workEnd.value,
+      (h) => (h === 24 ? 'midnight' : h12(h)));
+    fillOptions('cfPhaseCeiling', Array.from({ length: 12 }, (_, i) => i + 1), c.phaseCeiling.value);
+
+    el('cfBreaks').value = c.breaks.text;
+    el('cfWorkDays').innerHTML = DAY_LABELS.map((name, i) => {
+      const on = c.workDays.value.includes(i);
+      return `<label class="${el('cfWorkDays').dataset.dayClass}">`
+        + `<input type="checkbox" value="${i}"${on ? ' checked' : ''} class="accent-amber-500">`
+        + `${name}</label>`;
+    }).join('');
+
+    el('cfModelSrc').textContent = sourceLine(c.aiModel)
+      + (st.producedBy && st.producedBy !== c.aiModel.value
+        ? ` \u00b7 showing ${st.producedBy}` : '');
+    el('cfTimeZoneSrc').textContent = sourceLine(c.timeZone);
+    el('cfWorkSrc').textContent = c.workStart.source === c.workEnd.source
+      ? sourceLine(c.workStart)
+      : `${sourceLine(c.workStart)} / ${sourceLine(c.workEnd)}`;
+    el('cfPhaseSrc').textContent = sourceLine(c.phaseCeiling);
+    el('cfWorkDaysSrc').textContent = sourceLine(c.workDays);
+    el('cfBreaksSrc').textContent = sourceLine(c.breaks);
+
+    el('cfProvider').textContent = st.provider;
+    el('cfApi').textContent = st.api;
+    el('cfSecrets').innerHTML = `<span class="${st.keyConfigured ? 'text-good' : 'text-bad'}">`
+      + `${st.keyConfigured ? 'set' : 'not set'}</span> \u00b7 `
+      + `<span class="${st.cronSecretConfigured ? 'text-good' : 'text-bad'}">`
+      + `${st.cronSecretConfigured ? 'set' : 'not set'}</span>`;
+
+    if (cron.configured) {
+      el('cfCron').textContent = `${cron.local} ${cron.everyDay ? 'daily' : cron.schedule}`;
+      el('cfCronNote').textContent = !st.cronSecretConfigured
+        ? 'Refused while CRON_SECRET is unset'
+        : cron.aligned
+          ? `${cron.utc} UTC \u00b7 work days only`
+          : `Misaligned: the day ends at ${cron.endOfDay}, schedule should be "${cron.shouldBe}"`;
+      el('cfCronNote').className = `mt-0.5 text-[11px] ${
+        cron.aligned && st.cronSecretConfigured ? 'text-fg-faint' : 'text-bad'}`;
+    } else {
+      el('cfCron').textContent = 'not configured';
+      el('cfCronNote').textContent = cron.note || '';
+    }
+
+    el('cfLast').textContent = agoLabel(st.computedAt);
+    el('cfLastNote').textContent = st.computedAt
+      ? `${st.phases} phases, ${st.moments} moments, ${st.wildcards} wildcards`
+        + `${st.fromSightings ? ` \u00b7 ${st.fromSightings} sightings` : ''}`
+        + `${st.droppedPhases > 0 ? ` \u00b7 ${st.droppedPhases} dropped` : ''}`
+      : '';
+  }
+
+  async function loadConfig() {
+    try {
+      renderConfig(await Tracker.api('/admin/config'));
+      cfLoaded = true;
+    } catch (e) {
+      el('cfServing').textContent = 'could not load';
+      cfMsg(e.message, true);
+    }
+  }
+
+  // Both lists come from the server: the models are the recommended few this key
+  // can actually reach, and the zones are the ones this runtime knows - an
+  // unknown zone makes every Intl call in the app throw.
+  async function loadConfigLists() {
+    try {
+      const { models, inUse, offList } = await Tracker.api('/admin/config/models');
+      fillOptions('cfModel', models, inUse);
+      if (offList) el('cfModelSrc').textContent += ' \u00b7 off the recommended list';
+    } catch (e) {
+      el('cfModel').innerHTML = '<option value="">could not list models</option>';
+    }
+    try {
+      const { zones, inUse } = await Tracker.api('/admin/config/timezones');
+      fillOptions('cfTimeZone', zones.length ? zones : [inUse], inUse);
+    } catch (e) {
+      el('cfTimeZone').innerHTML = '<option value="">could not list zones</option>';
+    }
+  }
+
+  const readForm = () => ({
+    aiModel: el('cfModel').value,
+    timeZone: el('cfTimeZone').value,
+    workStart: Number(el('cfWorkStart').value),
+    workEnd: Number(el('cfWorkEnd').value),
+    workDays: [...el('cfWorkDays').querySelectorAll('input:checked')].map((i) => Number(i.value)),
+    breaks: el('cfBreaks').value.trim(),
+    phaseCeiling: Number(el('cfPhaseCeiling').value),
+  });
+
+  el('cfReloadBtn').addEventListener('click', () => { loadConfig(); loadConfigLists(); });
+
+  el('cfSaveBtn').addEventListener('click', async () => {
+    const btn = el('cfSaveBtn');
+    btn.disabled = true;
+    try {
+      const body = readForm();
+      // An empty day list would disable the app on every day of the week, and
+      // the server rejects it - but saying so here beats a round trip.
+      if (body.workDays.length === 0) throw new Error('Pick at least one work day.');
+      await Tracker.api('/admin/config', { method: 'PUT', body });
+      // One reload, not three. The PUT returns the new config, but the panel also
+      // shows status and cron, and the first version of this fetched the whole
+      // payload twice more to get them.
+      await loadConfig();
+      cfMsg('Saved. Run the analysis to rebuild the phases.');
+      showToast('Config saved');
+      // The office clock may have moved, and every time on this page is drawn
+      // against it — including the heatmap's day buckets.
+      await refresh();
+    } catch (e) {
+      cfMsg(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  el('cfResetBtn').addEventListener('click', async () => {
+    const btn = el('cfResetBtn');
+    btn.disabled = true;
+    try {
+      const cleared = {};
+      for (const k of ['aiModel', 'timeZone', 'workStart', 'workEnd', 'workDays', 'breaks',
+        'phaseCeiling']) cleared[k] = null;
+      await Tracker.api('/admin/config', { method: 'PUT', body: cleared });
+      await loadConfig();
+      await loadConfigLists();
+      cfMsg('Reset \u2014 every field back to the environment.');
+    } catch (e) {
+      cfMsg(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // One call, on purpose. Not the trigger that was removed from the logging path
+  // - that one fired on every sighting. This is a person deciding to spend one.
+  el('cfRefreshBtn').addEventListener('click', async () => {
+    const btn = el('cfRefreshBtn');
+    const was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Running\u2026';
+    cfMsg('');
+    try {
+      const r = await Tracker.api('/admin/config/refresh', { method: 'POST' });
+      cfMsg(r.skipped
+        ? `Nothing to do: ${r.skipped}.`
+        : `${r.windows} phases, ${r.moments} moments, ${r.wildcards} wildcards from ${r.model}.`);
+      showToast('Analysis complete');
+    } catch (e) {
+      // The provider's own words: "quota exceeded, retry in 47s" is actionable,
+      // "failed" is not.
+      cfMsg(e.message, true);
+      showToast('Analysis failed');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = was;
+      await loadConfig();
+    }
+  });
+
   function switchToAuth() {
     el('appView').style.display = 'none';
     el('authView').style.display = 'block';

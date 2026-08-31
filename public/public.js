@@ -5,6 +5,7 @@
   const featuredTierLabel = document.getElementById('featuredTierLabel');
   const countdownCanvas = document.getElementById('countdownCanvas');
   const countdownNow = document.getElementById('countdownNow');
+  const dayDoneNote = document.getElementById('dayDoneNote');
   const countdownSr = document.getElementById('countdownSr');
   const windowLabel = document.getElementById('windowLabel');
   const featuredDetail = document.getElementById('featuredDetail');
@@ -234,6 +235,16 @@
     const next = Tracker.nextMoment(phases, timeZone, workHours);
     if (!next) return;
     if (next.window !== featured) featured = next.window;
+
+    // Today's predictions are spent, but the day is not: no countdown, a short
+    // summary of how the day went, and the log button stays live because HR can
+    // still walk past. Counting down sixteen hours to tomorrow morning while
+    // someone sits at their desk was worse than saying nothing.
+    if (dayDone() && !countdownOverride) {
+      renderDayDone();
+      return;
+    }
+    if (dayDoneNote) dayDoneNote.style.display = 'none';
     renderNextLabels(next);
 
     // The override wins over "happening now": the point of it is to watch the
@@ -256,6 +267,24 @@
       timer3d.setText(text);
       timer3d.setUrgent(secondsLeft > 0 && secondsLeft < URGENT_THRESHOLD_S);
     }
+  }
+
+  // Every phase carries the same answer — it is a fact about the page, not about
+  // one window — so the first one speaks for all of them.
+  const dayDone = () => !!(phases[0] && phases[0].dayDone);
+
+  // The end-of-day hero: what happened, not what is next.
+  function renderDayDone() {
+    const tally = Tracker.dayTally(phases, todayMinutes, Tracker.nowMinutes(timeZone));
+    countdownCanvas.style.display = 'none';
+    countdownNow.style.display = 'none';
+    if (dayDoneNote) dayDoneNote.style.display = 'block';
+    featuredTierLabel.textContent = 'Today\u2019s roams · all done';
+    const landed = `${tally.hits} of ${tally.total} predicted time${tally.total === 1 ? '' : 's'} landed`;
+    const logged = `${tally.logged} sighting${tally.logged === 1 ? '' : 's'} logged`;
+    windowLabel.textContent = `${landed} · ${logged}`;
+    countdownSr.textContent = `No predicted roams left today. ${landed}.`;
+    if (timer3d) { timer3d.setText('--:--:--'); timer3d.setUrgent(false); }
   }
 
   // The two lines under the clock, describing the moment it is counting to.
@@ -367,13 +396,28 @@
   // predicted 2:07 and nothing was logged" is exactly as much of a result as
   // "we predicted 2:07 and 2:07 happened" — and a blank there reads as missing
   // data rather than as an answer.
+  // Shown only when the phase's numbers came from the model. A statistical phase
+  // renders exactly as before, with nothing extra — the absence of the mark is
+  // what says "these are counts".
+  const PHASE_AI = 'inline-flex shrink-0 items-center text-amber-400';
+
+  function aiMark(w) {
+    if (!w.isSmart || typeof Icons === 'undefined') return '';
+    const conf = typeof w.confidence === 'number' ? `${w.confidence}% confident` : 'AI analysis';
+    return `<span class="${PHASE_AI}" data-ai title="Predicted by AI · ${conf}"`
+      + ` aria-label="Predicted by AI, ${conf}">${Icons.svg('sparkle', { size: '0.95em' })}</span>`;
+  }
+
   function loggedSummary(w) {
+    // A card describing another day has nothing to report yet — not even
+    // "nothing logged yet", which on tomorrow's card reads as a verdict on a day
+    // that has not started.
+    if (!w.showingToday) return '';
     const rows = Tracker.loggedInPhase(w, todayMinutes);
     if (rows.length === 0) {
       // Only once the range has closed is "nothing" an outcome rather than a
       // window still waiting to be filled.
-      const closed = Tracker.nowMinutes(timeZone) >= w.hourEnd * 60
-        && w.todayIsWorkDay !== false && !(w.dayOffset > 0);
+      const closed = Tracker.nowMinutes(timeZone) >= w.hourEnd * 60 && w.todayIsWorkDay !== false;
       return `<span class="${PHASE_NONE}">${closed ? 'no logs — missed' : 'nothing logged yet'}</span>`;
     }
     const shown = rows.slice(0, 3).map((r) => r.label).join(', ');
@@ -431,6 +475,11 @@
   // learned from work-day sightings, so on a Saturday there is nothing to wait
   // for today and saying "check back tomorrow" would be wrong twice over.
   function featuredDetailText(featured) {
+    if (featured.dayDone) {
+      return 'Every predicted time has been and gone, but the day has not — '
+        + 'keep logging if HR walks past. Tonight\u2019s analysis rebuilds these '
+        + 'phases from what actually happened today.';
+    }
     if (!featured.todayIsWorkDay) {
       return `No roams expected today — the pattern only turns up on work days. `
         + `Next window ${featured.dayLabel || 'soon'}. ${sourceOfExactTime(featured)}`;
@@ -448,6 +497,15 @@
   function sourceOfExactTime(w) {
     const row = Tracker.sureRow(w);
     if (!row) return '';
+    // An AI minute is not a bucket midpoint and has no sighting count behind it.
+    // Without this branch the line read "9:15am is the middle of the window
+    // stretch — nothing has been logged there yet", which is false twice over:
+    // the model chose that minute deliberately, and it is nowhere near a
+    // midpoint.
+    if (row.source === 'ai') {
+      const pct = typeof row.pct === 'number' ? ` The model puts ${row.pct}% on that exact minute.` : '';
+      return `${row.targetLabel} is the model's strongest pick inside this range.${pct}`;
+    }
     if (!row.from) {
       return `${row.targetLabel} is the middle of the ${row.quarter || 'window'} stretch — nothing has been logged there yet.`;
     }
@@ -462,8 +520,18 @@
 
   // The line under each moment: what the number is actually based on. A
   // projection and a measurement must not read the same.
+  // An AI moment has no quarter-hour bucket behind it — the model named the
+  // minute directly — so it cannot borrow the statistical wording. Without this
+  // branch these rows read "nothing logged in the undefined stretch yet".
+  const AI_SUBTITLE = {
+    sure: 'the strongest minute the AI found in this range',
+    likely: 'its second choice inside this range',
+    maybe: 'a weaker third choice inside this range',
+  };
+
   function tierSubtitle(t) {
     if (t.tier === 'wildcard') return t.note || 'projected from the usual gap between sightings';
+    if (t.source === 'ai') return AI_SUBTITLE[t.tier] || 'picked by the AI from the pattern';
     if (!t.from) return `nothing logged in the ${t.quarter} stretch yet — this is its midpoint`;
     return `${t.from} sighting${t.from === 1 ? '' : 's'} in the ${t.quarter} stretch`;
   }
@@ -497,9 +565,16 @@
 
     if (phasesNote) {
       const left = windows.filter((w) => !w.passed).length;
-      phasesNote.textContent = featured.todayIsWorkDay
-        ? `${left} of ${windows.length} still to come`
-        : `next work day · ${windows.length} phase${windows.length === 1 ? '' : 's'}`;
+      const plural = `phase${windows.length === 1 ? '' : 's'}`;
+      if (featured.dayDone) {
+        phasesNote.textContent = `all ${windows.length} done · today\u2019s record`;
+      } else if (!featured.showingToday) {
+        // Past work hours, or a day off: these cards are the next work day's,
+        // and "0 of 3 still to come" was counting down a day already spent.
+        phasesNote.textContent = `${featured.dayLabel || 'next work day'} · ${windows.length} ${plural}`;
+      } else {
+        phasesNote.textContent = `${left} of ${windows.length} still to come`;
+      }
     }
     // Only the phase in play is expanded BY DEFAULT — but a card the reader has
     // opened stays open, and one they have shut stays shut.
@@ -511,22 +586,26 @@
     // reader actually chose, keyed on the phase's hour so it survives the
     // rebuild, and only phases they have never touched follow the default.
     const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.85em' }) : '';
-    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.featured);
+    // w.highlight, not w.featured: once the day is done nothing is highlighted,
+    // which collapses every card by default while still letting a reader open
+    // one to read its verdicts.
+    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.highlight);
     tierChips.innerHTML = windows.map((w, i) => `
-      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.highlight ? 'data-featured' : ''} ${w.struck ? 'data-passed' : ''}>
         <summary class="${PHASE_HEAD}">
           <span class="${PHASE_NUM}">${i + 1}</span>
           <span class="${PHASE_RANGE}">${w.timeLabel}</span>
           ${loggedSummary(w)}
           <span class="${PHASE_META}">${w.count ? `${w.count} all-time` : w.badge}</span>
+          ${aiMark(w)}
           <span class="${PHASE_CARET}">${caret}</span>
         </summary>
         ${momentsOf(w).map((t) => `
           <div class="${TIER_ROW}">
-            <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
+            <span class="${TIER_TIME}" ${w.highlight && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
             <span class="${TIER_SUB}">${tierSubtitle(t)}</span>
             ${verdictBadge(t)}
-            <span class="${TIER_BADGE}" title="${t.label}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${pctLabel(t)}</span>
+            <span class="${TIER_BADGE}" title="${t.label}" ${w.highlight && t.tier === 'sure' ? 'data-next' : ''}>${pctLabel(t)}</span>
           </div>
         `).join('')}
         ${loggedRows(w)}
@@ -542,9 +621,22 @@
 
     // Re-attached after every rebuild, because the elements these are bound to
     // were just replaced.
+    //
+    // On the SUMMARY'S CLICK, not the card's `toggle`. `toggle` fires for the
+    // open attribute however it got there, including the one this render just
+    // wrote — the attribute is set while the fragment is parsed, and the event
+    // it queues runs after this listener is attached. So every default open
+    // recorded itself as a deliberate choice: the phase featured at 9am was
+    // logged as "the reader opened this", and stayed open for the rest of the
+    // day, right through the point where the day was over and every card was
+    // supposed to be shut. A click is the reader; an attribute is us.
+    //
+    // Read before the browser acts on the click, so `open` is still the old
+    // value and the reader's intent is its opposite. Keyboard activation of a
+    // summary dispatches a click too, so this is not a mouse-only path.
     tierChips.querySelectorAll('details[data-hour]').forEach((card) => {
-      card.addEventListener('toggle', () => {
-        openState.set(Number(card.dataset.hour), card.open);
+      card.querySelector('summary').addEventListener('click', () => {
+        openState.set(Number(card.dataset.hour), !card.open);
       });
     });
   }

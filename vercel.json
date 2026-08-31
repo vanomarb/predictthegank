@@ -5,7 +5,8 @@
   "outputDirectory": "public",
   "functions": {
     "api/index.js": {
-      "includeFiles": "{public/**,vercel.json}"
+      "includeFiles": "{public/**,vercel.json}",
+      "maxDuration": 60
     }
   },
   "routes": [
