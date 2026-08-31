@@ -23,7 +23,7 @@
   // The admin console's phase cards are the compact variant of the public
   // tracker's — same idea: the range is the card, the tiers are rows inside it.
   const PHASE_CARD = 'group overflow-hidden rounded-xl border border-line bg-ink-950 '
-    + 'data-featured:border-amber-500 data-passed:opacity-45';
+    + 'data-featured:border-amber-500 data-passed:opacity-70';
   const PHASE_HEAD = 'flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 '
     + 'hover:bg-ink-900 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-400 '
     + 'group-data-featured:bg-[rgba(242,169,59,0.08)] [&::-webkit-details-marker]:hidden';
@@ -35,6 +35,21 @@
     + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
   const PHASE_META = 'ml-auto text-[10px] tabular-nums text-fg-faint';
   const TIER_ROW = 'flex items-center gap-2 border-t border-line px-3 py-1.5';
+  // Whether each predicted moment landed — see the note in public.js. The
+  // console shows them too: it is where the person most likely to care whether
+  // the pattern is holding up actually works.
+  const VERDICT = 'shrink-0 rounded-full border px-1.5 py-px text-[8px] font-semibold uppercase tracking-[0.08em]';
+  const VERDICT_HIT = `${VERDICT} border-good bg-[rgba(var(--status-good-rgb),0.12)] text-good`;
+  const VERDICT_MISS = `${VERDICT} border-bad bg-[rgba(var(--status-bad-rgb),0.12)] text-bad`;
+
+  function verdictBadge(row) {
+    const outcome = Tracker.momentOutcome(row, todayMinutes, Tracker.nowMinutes(timeZone), featured || {});
+    if (!outcome) return '';
+    return outcome === 'hit'
+      ? `<span class="${VERDICT_HIT}">Hit</span>`
+      : `<span class="${VERDICT_MISS}">Missed</span>`;
+  }
+
   // The wildcard goes between the cards — see the note in public.js.
   // Hidden while its own phase is collapsed — see the note in public.js.
   const WILD_LINK = 'mx-4 hidden [details[open]+&]:flex items-center gap-2 border-l-2 border-dashed border-line py-1 pl-3';
@@ -74,13 +89,13 @@
   });
 
   const checkPrediction = Tracker.createPredictionWatcher({
-    onHit: (line, count) => {
+    onHit: (line, hits, moments) => {
       Tracker.notify('Called it — HR showed up', line, 'outcome');
-      showToast(`Prediction hit · ${count} sighting${count === 1 ? '' : 's'} in the window`);
+      showToast(`Prediction hit · ${hits} of ${moments} predicted times landed`);
     },
     onMiss: (line) => {
       Tracker.notify('Wrong prediction', line, 'outcome');
-      showToast('Prediction missed — nobody roamed in that window');
+      showToast('Prediction missed — nothing logged on a predicted minute');
     },
   });
   let timer3d = null;
@@ -273,6 +288,9 @@
   let workHours = null; // the office's logging window, from /api/config
   let countdownOverride = null; // COUNTDOWN_OVERRIDE_MS, testing only
   let featured = null; // the currently-featured tier window, updated every poll
+  let todayMinutes = []; // today's sightings, minutes since midnight — drives the hit/miss badges
+  // Cards the reader opened or closed by hand — see the note in public.js.
+  const openState = new Map();
 
   // Same gate as the public tracker's "I see them" button: a sighting can only
   // be logged during the office's working day (services/work-hours.js). Driven
@@ -333,6 +351,7 @@
       note.textContent = `Countdown overridden for testing — ${Math.round(config.countdownOverrideMs / 1000)}s from page load`;
       note.style.display = 'inline-flex';
     }
+    todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
     const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
     const chips = el('tierChips');
 
@@ -362,8 +381,10 @@
     // see the notes in public.js.
     const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.8em' }) : '';
     const wildcardOf = (w) => w.tiers.find((t) => t.tier === 'wildcard');
+    // A card the reader opened must survive the poll's rebuild — see public.js.
+    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.featured);
     chips.innerHTML = windows.map((w, i) => `
-      <details class="${PHASE_CARD}" ${w.featured ? 'open data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
         <summary class="${PHASE_HEAD}">
           <span class="${PHASE_NUM}">${i + 1}</span>
           <span class="${PHASE_RANGE}">${w.timeLabel}</span>
@@ -375,6 +396,7 @@
           <div class="${TIER_ROW}">
             <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
             <span class="${TIER_SUB}">${t.from ? `${t.from} in the ${t.quarter} stretch` : `${t.quarter} midpoint`}</span>
+            ${verdictBadge(t)}
             <span class="${TIER_BADGE}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
           </div>
         `).join('')}
@@ -383,9 +405,16 @@
         <div class="${WILD_LINK}" data-wildcard>
           <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
           <span class="${WILD_SUB}">${wildcardOf(w).note || 'projected from the usual gap'}</span>
+          ${verdictBadge(wildcardOf(w))}
           <span class="${WILD_BADGE}">${wildcardOf(w).label}</span>
         </div>` : ''}
     `).join('');
+
+    chips.querySelectorAll('details[data-hour]').forEach((card) => {
+      card.addEventListener('toggle', () => {
+        openState.set(Number(card.dataset.hour), card.open);
+      });
+    });
     return windows;
   }
 
@@ -410,7 +439,9 @@
     await renderList(sightings);
     Tracker.renderHeatmap(el('heatmapGrid'), stats.heatmap, tooltip);
     const windows = await renderTiers(stats);
-    checkPrediction(windows, stats.total, Tracker.windowPhase(windows.find((w) => w.featured), timeZone));
+    // Same inputs the badges use — see the note in public.js.
+    checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
+      { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
     renderByPerson(stats.byPerson);
     el('totalStat').textContent = stats.total;
     el('peakStat').textContent = Tracker.peakLabel(stats);

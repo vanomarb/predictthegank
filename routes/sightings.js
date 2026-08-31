@@ -77,10 +77,23 @@ async function buildHeatmapAndPrediction() {
   // the smart windows are enriched with it too, in GET /stats.
   const minutesOfDay = sightingTimestamps.map((ts) => dateMinutesInTZ(ts).minutes);
 
+  // Just today's, on the office clock. The page marks each predicted moment
+  // hit or missed against these; the pattern is built from every day, but
+  // whether a prediction landed is a question about the day you are looking at.
+  const today = dateMinutesInTZ(Math.floor(Date.now() / 1000)).date;
+  const todayMinutes = sightingTimestamps
+    .map((ts) => dateMinutesInTZ(ts))
+    .filter((d) => d.date === today)
+    .map((d) => d.minutes)
+    .sort((a, b) => a - b);
+
   const medianGap = medianGapMinutes(sightingTimestamps);
   const breaks = getBreaks();
   const windows = computePhases(heatmap, minutesOfDay, rows.length, medianGap, breaks);
-  return { total: rows.length, heatmap, byPerson, sightingTimestamps, minutesOfDay, medianGap, windows };
+  return {
+    total: rows.length, heatmap, byPerson, sightingTimestamps,
+    minutesOfDay, todayMinutes, medianGap, windows,
+  };
 }
 
 // The exact clock times inside ONE window.
@@ -104,24 +117,33 @@ async function buildHeatmapAndPrediction() {
 const QUARTER_MIN = 15;
 const QUARTERS = 60 / QUARTER_MIN;
 
+// How close a sighting has to be to a predicted time to count as a hit: the
+// predicted minute itself, and nothing after it. A prediction of 2:07pm is met
+// by a sighting from 2:07:00 to 2:07:59; 2:08 is a miss.
+//
+// This is deliberately unforgiving, and it is the whole point. The moment is
+// stated to the minute, so the minute is what it is claiming — crediting the
+// quarter-hour it was derived from (which is what this used to do) let a
+// prediction of 2:07 be "right" because someone was seen at 2:14, which is not
+// a prediction anyone would accept if it were written out in words. The same
+// rule applies to every tier and to the wildcard.
+const HIT_TOLERANCE_MIN = 1;
+
+// The span a predicted moment is answerable for, in minutes since midnight.
+const hitWindow = (at) => ({ windowFrom: at, windowTo: at + HIT_TOLERANCE_MIN });
+
 // Break time. HR is not roaming during lunch, so a sighting logged then says
 // nothing about the pattern and a prediction landing there is one nobody should
 // act on. Every predicted moment is checked against these before it is emitted:
-// a quarter-hour that overlaps a break is not a candidate for a tier, an hour
-// wholly inside one cannot become a phase, and a wildcard projected into one is
-// nudged past it. Configured with BREAK_TIMES — see services/work-hours.js.
+// a quarter-hour that overlaps a break is never a candidate (for a tier or for
+// the wildcard), and an hour wholly inside one cannot become a phase. Nothing
+// needs nudging out of a break because nothing can be placed in one.
+// Configured with BREAK_TIMES — see services/work-hours.js.
 const overlapsBreak = (from, to, breaks) =>
   breaks.some((b) => from < b.end && to > b.start);
-const inBreak = (minute, breaks) =>
-  breaks.some((b) => minute >= b.start && minute < b.end);
-// Which break a minute falls in, so the page can name it rather than saying
-// "not that one" and leaving the reader to guess why.
-function breakNameAt(minute, breaks) {
-  const b = breaks.find((x) => minute >= x.start && minute < x.end);
-  if (!b) return null;
-  return b.start >= 11 * 60 && b.start < 14 * 60 ? 'the lunch break' : 'the break';
-}
-
+// The middle value of a sorted list, averaging the two middle ones for an even
+// count. Used for both the predicted minute inside a quarter-hour and the median
+// gap between sightings.
 function medianOf(sorted) {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0
@@ -134,26 +156,40 @@ const clockOf = (minutesOfDay) => ({
   minute: minutesOfDay % 60,
 });
 
-function tiersForHour(minutesOfDay, hourStart, breaks) {
-  const base = hourStart * 60;
+// The quarter-hours of a span that could hold a prediction, each with the
+// sightings that actually fell in it. Aligned to :00/:15/:30/:45 so the labels
+// mean something, clipped to the span at both ends.
+//
+// A quarter that runs into a break is dropped outright rather than having its
+// break minutes filtered out: predicting 15:14 because 15:15-15:30 is
+// unavailable is a prediction shaped by the break, not by the data. Dropping
+// them here is also what stops anything ever being predicted AT a break's edge.
+function quarterBuckets(from, to, minutesOfDay, breaks) {
   const buckets = [];
-  for (let q = 0; q < QUARTERS; q += 1) {
-    const from = base + q * QUARTER_MIN;
-    const to = from + QUARTER_MIN;
-    // A quarter that runs into a break is dropped outright rather than having
-    // its break minutes filtered out: predicting 15:14 because 15:15-15:30 is
-    // unavailable is a prediction shaped by the break, not by the data.
-    if (overlapsBreak(from, to, breaks)) continue;
+  const first = Math.floor(from / QUARTER_MIN) * QUARTER_MIN;
+  for (let q = first; q < to; q += QUARTER_MIN) {
+    const lo = Math.max(q, from);
+    const hi = Math.min(q + QUARTER_MIN, to);
+    if (hi <= lo) continue;
+    if (overlapsBreak(lo, hi, breaks)) continue;
     buckets.push({
-      q,
-      from,
-      to,
-      values: minutesOfDay.filter((m) => m >= from && m < to).sort((a, b) => a - b),
+      from: lo,
+      to: hi,
+      values: (minutesOfDay || []).filter((m) => m >= lo && m < hi).sort((a, b) => a - b),
     });
   }
+  return buckets;
+}
+
+const quarterLabel = (b) =>
+  `:${String(b.from % 60).padStart(2, '0')}\u2013:${String(b.to % 60).padStart(2, '0')}`;
+
+function tiersForHour(minutesOfDay, hourStart, breaks, total) {
+  const base = hourStart * 60;
+  const buckets = quarterBuckets(base, base + 60, minutesOfDay, breaks);
   // Busiest quarter first; ties break to the earlier one so the same data always
   // produces the same prediction.
-  const ranked = buckets.slice().sort((a, b) => b.values.length - a.values.length || a.q - b.q);
+  const ranked = buckets.slice().sort((a, b) => b.values.length - a.values.length || a.from - b.from);
 
   // Fewer tiers than TIERS when breaks have eaten into the hour. Three of four
   // quarters is the usual worst case; an hour with nothing left never gets here,
@@ -164,7 +200,14 @@ function tiersForHour(minutesOfDay, hourStart, breaks) {
       tier: TIERS[i],
       ...clockOf(at),
       from: b.values.length,
-      quarter: `:${String(b.from % 60).padStart(2, '0')}\u2013:${String(b.to % 60).padStart(2, '0')}`,
+      quarter: quarterLabel(b),
+      // Share of ALL logged sightings that fell in this quarter-hour. This is
+      // what the sure/likely/maybe labels were standing in for, said out loud.
+      pct: total ? Math.round((b.values.length / total) * 100) : 0,
+      // The quarter above is where this minute came FROM; the window below is
+      // what it is judged against, and they are not the same thing. See
+      // HIT_TOLERANCE_MIN.
+      ...hitWindow(at),
     };
   });
 }
@@ -190,49 +233,73 @@ function medianGapMinutes(sightingTimestamps) {
   return medianOf(gaps);
 }
 
-// The wildcard: one more roam, in the GAP BETWEEN two phases.
+// The wildcard: the small chance of a roam in the GAP BETWEEN two phases.
 //
-// It is projected forward from the last predicted moment of a phase by however
-// long HR usually goes between sightings, and then held inside the gap that
-// follows that phase — from its range ending to the next range starting (or to
-// closing time, for the last one). That is what makes it a wildcard rather than
-// a fourth prediction: the phases say when HR is expected to be out, and this
-// says there is a chance of one more on the way from this phase to the next.
+// Chosen the same way a phase's own moments are — the busiest quarter-hour of
+// the gap, represented by the median minute of the sightings in it. That makes
+// it a real, low-probability prediction about a real stretch of time, which is
+// what a wildcard is for, and it moves with the data like everything else.
 //
-// An unclamped projection is not a claim about the gap at all; it can land
-// inside the very next phase's range, where it would be competing with that
-// phase's own moments, or inside a break, where nobody should be told to expect
-// anything. Both are corrected here, and the note says which happened.
-function projectWildcard(tiers, medianGap, gapStart, gapEnd, breaks) {
-  if (medianGap == null || tiers.length === 0) return null;
-  // Adjacent phases (9-10 and 10-11) leave nothing in between, and a gap made
-  // entirely of break time leaves nothing usable.
+// Three earlier versions were all some flavour of made-up, and each one showed
+// it in a different way:
+//
+//   - projected from the median gap and CLAMPED to the gap's end, so every
+//     wildcard on a site whose median gap is long read :59;
+//   - projected and DROPPED when it overshot, so the row vanished on those same
+//     sites, which is most of them;
+//   - projected and fell back to the gap's MIDPOINT, so whole-hour gaps all read
+//     :30 and one of them landed exactly on the minute a break ends.
+//
+// The lesson each time was the same: a position derived from the shape of the
+// gap rather than from sightings is not a prediction, and dressing it as one
+// produces a suspicious constant. So the data picks the minute now, and the
+// median-gap projection is only a fallback for a gap nobody has ever been seen
+// in — used only if it lands in a quarter that is actually available.
+function projectWildcard(tiers, medianGap, gapStart, gapEnd, breaks, minutesOfDay, total) {
   if (gapEnd - gapStart < 1) return null;
+  const buckets = quarterBuckets(gapStart, gapEnd, minutesOfDay, breaks);
+  if (buckets.length === 0) return null; // the whole gap is break time
 
-  const gap = Math.round(medianGap);
-  const latest = Math.max(...tiers.map((t) => t.hour * 60 + t.minute));
-  const projected = Math.round(latest + medianGap);
+  const share = (n) => (total ? Math.round((n / total) * 100) : 0);
 
-  let at = Math.min(Math.max(projected, gapStart), gapEnd - 1);
-  const clamped = at !== projected;
-
-  // Out of any break it landed in, forward first (a roam pushed later by lunch
-  // is the natural reading), and only backwards if the gap runs out.
-  const hitBreak = inBreak(at, breaks);
-  const pushedPast = hitBreak ? breakNameAt(at, breaks) : null;
-  while (inBreak(at, breaks) && at < gapEnd - 1) at += 1;
-  if (inBreak(at, breaks)) {
-    while (inBreak(at, breaks) && at > gapStart) at -= 1;
-    if (inBreak(at, breaks)) return null; // the whole gap is break time
+  // 1. Where roams have actually been seen in this gap.
+  const seen = buckets
+    .filter((b) => b.values.length > 0)
+    .sort((a, b) => b.values.length - a.values.length || a.from - b.from);
+  if (seen.length > 0) {
+    const b = seen[0];
+    const at = medianOf(b.values);
+    return {
+      tier: 'wildcard',
+      ...clockOf(at),
+      from: b.values.length,
+      quarter: quarterLabel(b),
+      pct: share(b.values.length),
+      measured: true,
+      note: `${b.values.length === 1 ? '1 sighting has' : `${b.values.length} sightings have`} `
+        + `landed in the ${quarterLabel(b)} stretch of this gap — a small chance of one more`,
+      ...hitWindow(at),
+    };
   }
 
-  let note = `projected from the usual ${gap}-minute gap between sightings`;
-  if (pushedPast) note += `, nudged past ${pushedPast}`;
-  else if (clamped && at === gapStart) note += ', the earliest a roam could slot in here';
-  else if (clamped) note += ', the last chance before the next window';
-  else if (at >= (OFFICE_HOURS.end - 1) * 60) note += ', right at the end of the day';
-
-  return { tier: 'wildcard', ...clockOf(at), from: null, note };
+  // 2. Nobody has ever been seen in this gap. The usual gap between sightings is
+  //    the only thing left to go on, and only if it points somewhere usable.
+  if (medianGap == null || tiers.length === 0) return null;
+  const latest = Math.max(...tiers.map((t) => t.hour * 60 + t.minute));
+  const projected = Math.round(latest + medianGap);
+  const host = buckets.find((b) => projected >= b.from && projected < b.to);
+  if (!host) return null;
+  return {
+    tier: 'wildcard',
+    ...clockOf(projected),
+    from: 0,
+    quarter: quarterLabel(host),
+    pct: 0,
+    measured: false,
+    note: `nothing has ever been logged in this gap — projected from the usual `
+      + `${Math.round(medianGap)}-minute gap between sightings`,
+    ...hitWindow(projected),
+  };
 }
 
 // Builds one window's worth of predictions: the range and the data-backed
@@ -246,7 +313,7 @@ function buildPhase({ hourStart, hourEnd, count, total, minutesOfDay, breaks, ex
     pct: total ? Math.round((count / total) * 100) : 0,
     // Clock order: the rows are a run through the window, so the tier a row
     // carries is a property of the moment, not its place in a list.
-    tiers: tiersForHour(minutesOfDay, hourStart, breaks)
+    tiers: tiersForHour(minutesOfDay, hourStart, breaks, total)
       .sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute)),
     ...(extra || {}),
   };
@@ -255,12 +322,13 @@ function buildPhase({ hourStart, hourEnd, count, total, minutesOfDay, breaks, ex
 // Adds each phase's wildcard, aimed at the gap between it and the phase after
 // it. Takes the whole run in clock order because "the gap after this phase" is
 // not something a single phase knows.
-function withWildcards(phases, medianGap, breaks) {
+function withWildcards(phases, medianGap, breaks, minutesOfDay, total) {
   return phases.map((phase, i) => {
     const next = phases[i + 1];
     const gapStart = phase.hourEnd * 60;
     const gapEnd = next ? next.hourStart * 60 : OFFICE_HOURS.end * 60;
-    const wildcard = projectWildcard(phase.tiers, medianGap, gapStart, gapEnd, breaks);
+    const wildcard = projectWildcard(phase.tiers, medianGap, gapStart, gapEnd, breaks,
+      minutesOfDay, total);
     if (!wildcard) return phase;
     return { ...phase, tiers: [...phase.tiers, wildcard] };
   });
@@ -352,7 +420,7 @@ function computePhases(heatmap, minutesOfDay, total, medianGap, breaks, limit = 
     }))
     .filter((p) => p.tiers.length > 0);
 
-  return withWildcards(phases, medianGap, breaks);
+  return withWildcards(phases, medianGap, breaks, minutesOfDay, total);
 }
 
 async function readStoredSmartWindows() {
@@ -547,7 +615,9 @@ router.get('/', requireAuth, async (req, res, next) => {
 // routes/cron.js).
 router.get('/stats', optionalAuth, async (req, res, next) => {
   try {
-    const { total, heatmap, byPerson, minutesOfDay, medianGap, windows } = await buildHeatmapAndPrediction();
+    const {
+      total, heatmap, byPerson, minutesOfDay, todayMinutes, medianGap, windows,
+    } = await buildHeatmapAndPrediction();
     const stored = await readStoredSmartWindows();
 
     // Gemini is asked for an hour range and nothing finer — a model guessing at
@@ -578,10 +648,12 @@ router.get('/stats', optionalAuth, async (req, res, next) => {
           .filter((p) => p.tiers.length > 0),
         medianGap,
         breaks,
+        minutesOfDay,
+        total,
       )
       : stored;
 
-    const payload = { total, heatmap, windows, smartWindows };
+    const payload = { total, heatmap, windows, smartWindows, todayMinutes };
     if (req.user) payload.byPerson = byPerson;
     res.json(payload);
   } catch (e) {
@@ -592,4 +664,27 @@ router.get('/stats', optionalAuth, async (req, res, next) => {
 // The daily cron job needs the recompute, everything else needs the router. An
 // object rather than the router with properties hung off it, so neither caller
 // has to know that an express Router happens to be a function.
-module.exports = { router, recomputeSmartPrediction };
+//
+// `prediction` exposes the pure prediction functions for the test harnesses.
+// They used to reach them by slicing this file’s source between named
+// landmarks, which broke every time a declaration moved — and worse, silently
+// swallowed medianOf once when a slice boundary shifted, leaving three callers
+// pointing at nothing while the module still imported cleanly. Nothing in the
+// app reads this; it exists so the tests can stop guessing at line boundaries.
+module.exports = {
+  router,
+  recomputeSmartPrediction,
+  prediction: {
+    HIT_TOLERANCE_MIN,
+    QUARTER_MIN,
+    medianOf,
+    quarterBuckets,
+    tiersForHour,
+    projectWildcard,
+    medianGapMinutes,
+    selectPhaseHours,
+    computePhases,
+    buildPhase,
+    withWildcards,
+  },
+};

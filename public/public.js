@@ -24,6 +24,11 @@
   let workHours = null; // the office's logging window, from /api/config
   let countdownOverride = null; // COUNTDOWN_OVERRIDE_MS, testing only
   let featured = null; // the currently-featured tier window, updated every poll
+  let todayMinutes = []; // today's sightings, minutes since midnight — drives the hit/miss badges
+  // Which phase cards the reader has opened or closed by hand, keyed on the
+  // phase's start hour. Deliberately not persisted: it is the state of this
+  // reading session, not a preference.
+  const openState = new Map();
   let timer3d = null;
 
   const OPEN_HINT = spotHint.textContent;
@@ -156,16 +161,18 @@
     closeIds: ['hitModalClose', 'hitModalOk'],
   });
 
+  // Judged exactly as the per-moment badges are: a sighting has to land in a
+  // predicted minute. The modal and the badges under it cannot disagree.
   const checkPrediction = Tracker.createPredictionWatcher({
-    onHit: (line, count) => {
+    onHit: (line, hits, moments) => {
       hitModal.show(line);
       Tracker.notify('Called it — HR showed up', line, 'outcome');
-      showToast(`Prediction hit · ${count} sighting${count === 1 ? '' : 's'} logged in the window`);
+      showToast(`Prediction hit · ${hits} of ${moments} predicted times landed`);
     },
     onMiss: (line) => {
       missModal.show(line);
       Tracker.notify('Wrong prediction', line, 'outcome');
-      showToast('Prediction missed — nobody roamed in that window');
+      showToast('Prediction missed — nothing logged on a predicted minute');
     },
   });
 
@@ -254,8 +261,12 @@
   // disclosure rather than a class toggle — it is keyboard-operable, it works
   // before any of this JS runs, and there is no open/closed state of our own to
   // keep in sync across the five-second poll.
+  // Past phases are dimmed, but only to 70%: their rows are the ones carrying a
+  // hit/miss verdict, and a badge is no use if it is the faintest thing on the
+  // card. Opacity cannot be opted out of by a child, so the dimming itself has
+  // to stay light enough to read through.
   const PHASE_CARD = 'group overflow-hidden rounded-2xl border border-line bg-ink-900 transition-[border-color] duration-200 '
-    + 'data-featured:border-amber-500 data-passed:opacity-45';
+    + 'data-featured:border-amber-500 data-passed:opacity-70';
   // list-none plus the webkit marker rule removes the browser's own triangle;
   // the chevron below replaces it so it can be styled and rotated.
   const PHASE_HEAD = 'flex cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-2.5 '
@@ -265,10 +276,14 @@
     + 'group-data-featured:border-amber-500 group-data-featured:text-amber-300';
   const PHASE_RANGE = 'text-[15px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
     + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
-  // The phase's headline moment, kept in the summary so a COLLAPSED card still
-  // answers "when" without being opened. That is the point of collapsing them:
-  // less space, not less information.
-  const PHASE_LEAD = 'text-[13px] tabular-nums text-fg-muted group-data-featured:text-amber-300';
+  // What was actually LOGGED in this range, in the summary line, so a collapsed
+  // card answers "did it happen" without being opened.
+  //
+  // This slot used to repeat the phase's own sure prediction, which is the first
+  // row inside the card and told the reader nothing they could not already see.
+  // The outcome is the thing worth surfacing on a shut card.
+  const PHASE_LOGGED = 'text-[13px] tabular-nums text-good';
+  const PHASE_NONE = 'text-[13px] text-fg-faint';
   const PHASE_META = 'ml-auto text-[11px] tabular-nums text-fg-faint';
   const PHASE_CARET = 'shrink-0 text-fg-faint transition-transform duration-200 group-open:rotate-180';
 
@@ -278,8 +293,83 @@
   const TIER_ROW = 'flex items-center gap-3 border-t border-line px-4 py-2.5';
   const TIER_TIME = 'w-[76px] shrink-0 text-[17px] font-semibold tabular-nums tracking-[-0.01em] text-fg data-next:text-amber-300';
   const TIER_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint';
-  const TIER_BADGE = 'shrink-0 self-start rounded-full border border-line px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] text-fg-muted '
+  // The confidence, as the number it always was. sure/likely/maybe was a name
+  // for "which quarter-hour of this window holds the most sightings", and a
+  // reader had to learn the ranking before the word meant anything; a percentage
+  // is the same fact, legible on sight, and comparable between phases. The word
+  // survives as the badge's tooltip for anyone who wants it.
+  const TIER_BADGE = 'w-[46px] shrink-0 self-start rounded-full border border-line px-2 py-1 text-center text-[10px] font-semibold tabular-nums text-fg-muted '
     + 'data-next:border-amber-500 data-next:text-amber-300';
+  const pctLabel = (t) => (typeof t.pct === 'number' ? `${t.pct}%` : '—');
+
+  // Whether a predicted moment landed, once its window has closed. Green for a
+  // hit, red for a miss — the two outcomes read at a glance down the card, which
+  // is the point of putting them on every row rather than only in the modal.
+  //
+  // The tinted background is what makes them legible against the row's own
+  // border colours; a bare outline pill in the same palette as the tier badge
+  // beside it is easy to skim straight past. Built from the --status-*-rgb
+  // tokens rather than an opacity modifier: these colours reach Tailwind through
+  // var() bridges, and `bg-good/10` silently drops the opacity on those. The
+  // tokens are redefined per theme, so the tint follows the palette instead of
+  // being one fixed guess at both.
+  const VERDICT = 'shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]';
+  const VERDICT_HIT = `${VERDICT} border-good bg-[rgba(var(--status-good-rgb),0.12)] text-good`;
+  const VERDICT_MISS = `${VERDICT} border-bad bg-[rgba(var(--status-bad-rgb),0.12)] text-bad`;
+
+  function verdictBadge(row) {
+    const outcome = Tracker.momentOutcome(row, todayMinutes, Tracker.nowMinutes(timeZone), featured || {});
+    if (!outcome) return '';
+    return outcome === 'hit'
+      ? `<span class="${VERDICT_HIT}" title="A sighting was logged in the predicted minute">Hit</span>`
+      : `<span class="${VERDICT_MISS}" title="Nothing was logged in the predicted minute">Missed</span>`;
+  }
+
+  // What was actually logged in this range, under the predictions it is being
+  // measured against. Visually quieter and indented: these are facts, and the
+  // rows above them are claims.
+  const LOGGED_HEAD = 'flex items-center gap-2 border-t border-line bg-ink-950 px-4 py-1.5 '
+    + 'text-[9px] uppercase tracking-[0.1em] text-fg-faint';
+  const LOGGED_ROW = 'flex items-center gap-3 border-t border-line/60 bg-ink-950 px-4 py-2';
+  const LOGGED_TIME = 'w-[76px] shrink-0 text-[13px] font-semibold tabular-nums text-fg-muted data-matched:text-good';
+  const LOGGED_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint';
+
+  // The header's outcome line. Shown on a hit and on a miss alike, because "we
+  // predicted 2:07 and nothing was logged" is exactly as much of a result as
+  // "we predicted 2:07 and 2:07 happened" — and a blank there reads as missing
+  // data rather than as an answer.
+  function loggedSummary(w) {
+    const rows = Tracker.loggedInPhase(w, todayMinutes);
+    if (rows.length === 0) {
+      // Only once the range has closed is "nothing" an outcome rather than a
+      // window still waiting to be filled.
+      const closed = Tracker.nowMinutes(timeZone) >= w.hourEnd * 60
+        && w.todayIsWorkDay !== false && !(w.dayOffset > 0);
+      return `<span class="${PHASE_NONE}">${closed ? 'no logs — missed' : 'nothing logged yet'}</span>`;
+    }
+    const shown = rows.slice(0, 3).map((r) => r.label).join(', ');
+    const more = rows.length > 3 ? ` +${rows.length - 3}` : '';
+    const anyHit = rows.some((r) => r.matched);
+    return `<span class="${anyHit ? PHASE_LOGGED : PHASE_NONE}">${shown}${more}</span>`;
+  }
+
+  function loggedRows(w) {
+    const rows = Tracker.loggedInPhase(w, todayMinutes);
+    if (rows.length === 0) return '';
+    return `
+      <div class="${LOGGED_HEAD}" data-logged="head">Logged in this window · ${rows.length}</div>
+      ${rows.map((r) => `
+        <div class="${LOGGED_ROW}" data-logged="row">
+          <span class="${LOGGED_TIME}" ${r.matched ? 'data-matched' : ''}>${r.label}</span>
+          <span class="${LOGGED_SUB}">${r.matched
+            ? `landed on the ${r.matched.label} prediction`
+            : 'nothing was predicted for this minute'}</span>
+          ${r.matched
+            ? `<span class="${VERDICT_HIT}">Hit</span>`
+            : `<span class="${VERDICT_MISS}">Missed</span>`}
+        </div>
+      `).join('')}`;
+  }
 
   // The wildcard sits BETWEEN the cards, not inside one.
   //
@@ -306,7 +396,7 @@
   const WILD_TIME = 'shrink-0 text-[15px] font-semibold tabular-nums text-fg-muted min-[481px]:w-[68px]';
   const WILD_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint '
     + 'max-[480px]:order-last max-[480px]:w-full max-[480px]:flex-none';
-  const WILD_BADGE = 'shrink-0 rounded-full border border-dashed border-line px-2.5 py-1 text-[10px] uppercase tracking-[0.08em] text-fg-faint max-[480px]:ml-auto';
+  const WILD_BADGE = 'w-[46px] shrink-0 rounded-full border border-dashed border-line px-2 py-1 text-center text-[10px] font-semibold tabular-nums text-fg-faint max-[480px]:ml-auto';
 
   // Three cases, and the weekend one is the reason this exists: the pattern is
   // learned from work-day sightings, so on a Saturday there is nothing to wait
@@ -384,34 +474,52 @@
         ? `${left} of ${windows.length} still to come`
         : `next work day · ${windows.length} phase${windows.length === 1 ? '' : 's'}`;
     }
-    // Only the phase in play is expanded. `open` is set from the data on every
-    // render, so a phase that closes while the page is left open collapses on
-    // its own and the next one takes the space.
+    // Only the phase in play is expanded BY DEFAULT — but a card the reader has
+    // opened stays open, and one they have shut stays shut.
+    //
+    // The five-second poll rewrites this whole list, which threw away the
+    // <details> elements and rebuilt them from `w.featured` every time: open a
+    // past phase to read its verdicts and it slammed shut a few seconds later,
+    // repeatedly, while you were looking at it. `openState` remembers what the
+    // reader actually chose, keyed on the phase's hour so it survives the
+    // rebuild, and only phases they have never touched follow the default.
     const caret = typeof Icons !== 'undefined' ? Icons.svg('caret-down', { size: '0.85em' }) : '';
+    const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.featured);
     tierChips.innerHTML = windows.map((w, i) => `
-      <details class="${PHASE_CARD}" ${w.featured ? 'open data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
+      <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.featured ? 'data-featured' : ''} ${w.passed && !w.featured ? 'data-passed' : ''}>
         <summary class="${PHASE_HEAD}">
           <span class="${PHASE_NUM}">${i + 1}</span>
           <span class="${PHASE_RANGE}">${w.timeLabel}</span>
-          <span class="${PHASE_LEAD}">${w.targetLabel}</span>
-          <span class="${PHASE_META}">${w.count ? `${w.count} logged` : w.badge}</span>
+          ${loggedSummary(w)}
+          <span class="${PHASE_META}">${w.count ? `${w.count} all-time` : w.badge}</span>
           <span class="${PHASE_CARET}">${caret}</span>
         </summary>
         ${momentsOf(w).map((t) => `
           <div class="${TIER_ROW}">
             <span class="${TIER_TIME}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.targetLabel}</span>
             <span class="${TIER_SUB}">${tierSubtitle(t)}</span>
-            <span class="${TIER_BADGE}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${t.label}</span>
+            ${verdictBadge(t)}
+            <span class="${TIER_BADGE}" title="${t.label}" ${w.featured && t.tier === 'sure' ? 'data-next' : ''}>${pctLabel(t)}</span>
           </div>
         `).join('')}
+        ${loggedRows(w)}
       </details>
       ${wildcardOf(w) ? `
         <div class="${WILD_LINK}" data-wildcard>
           <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
           <span class="${WILD_SUB}">${tierSubtitle(wildcardOf(w))}</span>
-          <span class="${WILD_BADGE}">${wildcardOf(w).label}</span>
+          ${verdictBadge(wildcardOf(w))}
+          <span class="${WILD_BADGE}" title="${wildcardOf(w).label}">${pctLabel(wildcardOf(w))}</span>
         </div>` : ''}
     `).join('');
+
+    // Re-attached after every rebuild, because the elements these are bound to
+    // were just replaced.
+    tierChips.querySelectorAll('details[data-hour]').forEach((card) => {
+      card.addEventListener('toggle', () => {
+        openState.set(Number(card.dataset.hour), card.open);
+      });
+    });
   }
 
   async function pollStats() {
@@ -431,12 +539,12 @@
       note.textContent = `Countdown overridden for testing — ${Math.round(config.countdownOverrideMs / 1000)}s from page load`;
       note.style.display = 'inline-flex';
     }
+    todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
     const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
     renderTiers(windows, stats.total);
-    // The watcher needs where the clock sits relative to the window — before,
-    // inside, or past it — so a sighting logged just outside the range still
-    // counts (see the grace period in createPredictionWatcher).
-    checkPrediction(windows, stats.total, Tracker.windowPhase(windows.find((w) => w.featured), timeZone));
+    // Same inputs the badges use, so the two cannot drift apart.
+    checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
+      { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
     Tracker.renderHeatmap(heatmapGrid, stats.heatmap, tooltip);
     totalStat.textContent = stats.total;
     peakStat.textContent = Tracker.peakLabel(stats);

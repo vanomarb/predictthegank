@@ -254,6 +254,17 @@ const Tracker = (() => {
       const sec = (t.hour % 24) * 3600 + t.minute * 60;
       return {
         ...t,
+        // Share of all logged sightings in this moment's stretch. Replaces the
+        // sure/likely/maybe wording on screen: the tier was a name for a
+        // number, and the number says the same thing without asking the reader
+        // to remember which of three words outranks which.
+        pct: typeof t.pct === 'number' ? t.pct : null,
+        // windowFrom/windowTo is the span the moment is answerable for: the
+        // predicted minute itself and nothing after it, so 2:07pm is met from
+        // 2:07:00 to 2:07:59 and missed at 2:08. See HIT_TOLERANCE_MIN in
+        // routes/sightings.js.
+        windowFrom: t.windowFrom,
+        windowTo: t.windowTo,
         label: TIER_LABEL[t.tier] || t.tier,
         targetSec: sec,
         targetLabel: hourMinuteLabel(t.hour, t.minute),
@@ -298,6 +309,67 @@ const Tracker = (() => {
     return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   }
 
+  // Did this moment land? Answered against TODAY's sightings only — the pattern
+  // is learned from every day, but "was this prediction right" is a question
+  // about the day in front of you.
+  //
+  // The span is the predicted minute, not the stretch it was derived from, so
+  // most of these come back 'missed'. That is an honest scoreboard for a
+  // minute-precise claim, not a bug.
+  //
+  // Three answers, and the third matters as much as the other two: a moment
+  // whose window has not closed yet is not a miss, it is unanswered, and
+  // badging it early would call a prediction wrong before it had its chance.
+  // Returns 'hit', 'missed', or null for "no verdict yet".
+  function momentOutcome(row, todayMinutes, nowMin, opts) {
+    const { todayIsWorkDay = true, dayOffset = 0 } = opts || {};
+    // Nothing is being predicted for today on a day off, and a phase carried
+    // over to tomorrow has not happened yet either.
+    if (!todayIsWorkDay || dayOffset > 0) return null;
+    if (row == null || row.windowFrom == null || row.windowTo == null) return null;
+    if (nowMin < row.windowTo) return null; // still open
+    const logged = todayMinutes || [];
+    const hit = logged.some((m) => m >= row.windowFrom && m < row.windowTo);
+    return hit ? 'hit' : 'missed';
+  }
+
+  // Minutes since midnight on the office clock.
+  function nowMinutes(timeZone) {
+    const { hour, minute } = localTimeParts(timeZone);
+    return hour * 60 + minute;
+  }
+
+  // "2:24pm" from minutes since midnight.
+  function clockLabel(minutes) {
+    const m = ((Math.round(minutes) % 1440) + 1440) % 1440;
+    return hourMinuteLabel(Math.floor(m / 60), m % 60);
+  }
+
+  // What was ACTUALLY logged inside a phase's range, each sighting paired with
+  // the predicted moment it landed on, or null if it landed on none.
+  //
+  // The predicted rows say what was expected and whether it happened; these say
+  // what happened and whether it was expected. Without them a card full of
+  // MISSED reads as "HR never came", when the truth is often "HR came at 2:24
+  // and we said 2:07" — a different, more useful thing to know, and the only
+  // way to see the prediction drifting rather than simply failing.
+  function loggedInPhase(w, todayMinutes) {
+    if (!w || w.hourStart == null || w.hourEnd == null) return [];
+    const from = w.hourStart * 60;
+    const to = w.hourEnd * 60;
+    const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
+    return (todayMinutes || [])
+      .filter((m) => m >= from && m < to)
+      .sort((a, b) => a - b)
+      .map((m) => ({
+        minute: m,
+        label: clockLabel(m),
+        // Same rule as the badges: the predicted minute, nothing after it.
+        matched: moments.find((t) => t.windowFrom != null
+          && m >= t.windowFrom && m < t.windowTo) || null,
+      }));
+  }
+
   function windowLabel(w) {
     if (w.tiers === undefined && w.minute !== undefined) return hourMinuteLabel(w.hourStart, w.minute);
     return w.hourStart === w.hourEnd ? hourLabel(w.hourStart) : `${hourLabel(w.hourStart)}–${hourLabel(w.hourEnd)}`;
@@ -317,44 +389,6 @@ const Tracker = (() => {
     const short = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(new Date());
     const idx = DAYS.indexOf(short);
     return idx === -1 ? new Date().getDay() : idx;
-  }
-
-  // ---- a window's range, and where the clock sits in it ----
-  // Grace for a sighting logged OUTSIDE a window's range. Applies on both sides:
-  // spotting HR 20s before the window opens, or 20s after it closes, is still
-  // the predicted roam.
-  const WINDOW_GRACE_S = 30;
-
-  // Every tier except wildcard predicts an HOUR RANGE (10:00-11:00). Wildcard is
-  // the exception: it is a minute-level hunch ("maybe around 5:42pm"), so its
-  // range is that exact instant and it is judged against it — an hour-wide range
-  // would make the loosest prediction in the app the easiest one to satisfy.
-  function windowRange(w) {
-    if (w.tier === 'wildcard') {
-      const at = (w.hourStart % 24) * 3600 + (w.minute || 0) * 60;
-      return { startSec: at, endSec: at, exact: true };
-    }
-    return { startSec: (w.hourStart % 24) * 3600, endSec: (w.hourEnd % 24) * 3600, exact: false };
-  }
-
-  // Seconds until the window opens (positive), 0 while inside it, or negative
-  // seconds since it closed. A window that is not today is reported as far away
-  // rather than as "just closed", so nothing arms on a weekend.
-  const NOT_TODAY = 86400;
-  function windowPhase(w, timeZone) {
-    if (!w) return NOT_TODAY;
-    // Only the work-day check belongs here. Guarding on dayOffset as well looks
-    // sensible and is wrong: the moment a window passes, dayOffset flips to 1 —
-    // it points at TOMORROW's occurrence, because that is the next one to count
-    // down to — and suppressing the phase then means the verdict for the window
-    // that just closed never lands at all.
-    if (w.todayIsWorkDay === false) return NOT_TODAY;
-    const { hour, minute, second } = localTimeParts(timeZone);
-    const nowSec = hour * 3600 + minute * 60 + second;
-    const { startSec, endSec } = windowRange(w);
-    if (nowSec < startSec) return startSec - nowSec;
-    if (nowSec > endSec) return -(nowSec - endSec);
-    return 0;
   }
 
   // ---- work hours ----
@@ -978,68 +1012,64 @@ const Tracker = (() => {
   // count before and after, not a hard per-window check) — good enough for a
   // lighthearted verdict, not a claim of rigor.
   //
-  // GRACE. A window is "in play" from WINDOW_GRACE_S before it opens until
-  // WINDOW_GRACE_S after it closes, and any sighting logged in that span counts
-  // for it. Someone who spots HR at 09:59:40 for a 10:00 window — or at 11:00:20
-  // as it wanders off — has confirmed the prediction; the naive "did the total
-  // move while the window was active" check calls both of those a miss, which is
-  // plainly wrong.
+  // The verdict on a whole phase, judged by exactly the rule the per-moment
+  // badges use: a sighting has to land IN a predicted minute (see
+  // HIT_TOLERANCE_MIN in routes/sightings.js). The phase is a hit if any of the
+  // moments inside its range was hit, and a miss if none was.
   //
-  // The baseline is taken on the first poll that finds the window in play, so
-  // everything logged from that moment on counts, and the verdict is held back
-  // until the trailing grace has elapsed.
+  // This replaces a count-based check — "did the total number of sightings move
+  // while the window was open, give or take thirty seconds" — which answered a
+  // different question from the badges sitting right underneath it. The page
+  // could show three MISSED badges and a "Called it!" modal over the top of
+  // them, on the same data, and both were behaving as designed. One rule now.
   //
-  // The phase (see windowPhase) is what makes this work for wildcard too: its
-  // range is a single instant, so it is never "active" in the hour sense and a
-  // flag-based watcher could never arm on it at all.
+  // The wildcard is deliberately not part of it: it is the chance of a roam in
+  // the gap AFTER this phase, it lands outside the range, and waiting for it
+  // would hold the verdict back an hour past the thing it is judging. It keeps
+  // its own badge.
   //
-  // Takes { onHit, onMiss, graceS }; any may be omitted. `check` wants the phase
-  // of the featured window: seconds until it opens, 0 inside, negative since it
-  // closed.
+  // Reports each phase once, when it CLOSES. Phases that had already closed when
+  // the page opened are recorded as seen without firing: a modal about a window
+  // that ended before anyone loaded the page is not news, and three of them
+  // stacking up on a mid-afternoon refresh is worse.
+  //
+  // Takes { onHit, onMiss }; either may be omitted. onHit is given the number of
+  // predicted moments that landed, and how many there were.
   function createPredictionWatcher(handlers) {
     const { onHit, onMiss } = handlers || {};
-    const graceS = (handlers && handlers.graceS) != null ? handlers.graceS : WINDOW_GRACE_S;
-    const keyOf = (w) => `${w.tier}@${w.hourStart}@${w.minute || 0}`;
-    let watched = null; // { key, totalAtStart, totalAtEnd, notified }
+    const reported = new Set();
+    let primed = false;
 
-    return function check(windows, total, phase) {
-      const current = windows.find((w) => w.featured);
-      const p = typeof phase === 'number' ? phase : NOT_TODAY;
+    return function check(windows, todayMinutes, nowMin, opts) {
+      const { todayIsWorkDay = true } = opts || {};
+      const list = Array.isArray(windows) ? windows : [];
+      const closed = list.filter((w) => todayIsWorkDay
+        && w.hourEnd != null
+        && nowMin >= w.hourEnd * 60);
 
-      // In play: inside the range, or within grace of either end.
-      if (current && Math.abs(p) <= graceS) {
-        const key = keyOf(current);
-        if (!watched || watched.key !== key) {
-          watched = { key, totalAtStart: total, totalAtEnd: total, notified: false };
-        } else {
-          // Keep the running count for as long as the window is in play. The
-          // verdict compares THIS, not the total at verdict time: a sighting
-          // logged after the grace expired belongs to no window, and comparing
-          // against the later total would hand it to this one — which made a
-          // wildcard "hit" out of a sighting five minutes off its predicted
-          // minute.
-          watched.totalAtEnd = total;
-        }
+      // First call of the session: note what has already been and gone.
+      if (!primed) {
+        primed = true;
+        closed.forEach((w) => reported.add(w.hourStart));
         return;
       }
 
-      // Past the trailing grace: time to call it.
-      if (!watched || watched.notified) return;
-      if (p < 0 && -p > graceS) {
-        watched.notified = true;
-        const logged = watched.totalAtEnd - watched.totalAtStart;
-        if (logged <= 0) {
-          if (onMiss) onMiss(pick(MISSED_PREDICTION_LINES));
-        } else if (onHit) {
-          onHit(pick(HIT_PREDICTION_LINES), logged);
+      for (const w of closed) {
+        if (reported.has(w.hourStart)) continue;
+        reported.add(w.hourStart);
+
+        const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
+        if (moments.length === 0) continue;
+        const hits = moments.filter((t) => momentOutcome(t, todayMinutes, nowMin,
+          { todayIsWorkDay, dayOffset: 0 }) === 'hit').length;
+
+        if (hits > 0) {
+          if (onHit) onHit(pick(HIT_PREDICTION_LINES), hits, moments.length);
+        } else if (onMiss) {
+          onMiss(pick(MISSED_PREDICTION_LINES));
         }
       }
     };
-  }
-
-  // Kept so nothing that only wants the miss has to change shape.
-  function createMissedPredictionWatcher(onMiss) {
-    return createPredictionWatcher({ onMiss });
   }
 
   // setInterval wrapper paused via the Page Visibility API. Idempotent start.
@@ -1065,12 +1095,12 @@ const Tracker = (() => {
     DAYS, DAYS_FULL, api, hourLabel, heatColor, attachTooltip, renderHeatmap,
     normalizeWindows, classifyWindows, peakLabel, createPoller, createTicker,
     secondsUntilHour, secondsUntilWindow, daysUntilWindow, isWorkDay,
-    windowRange, windowPhase, WINDOW_GRACE_S,
     windowTargetSec, windowTargetLabel, secondsUntilTarget, secondsUntilPrediction, sureRow,
+    momentOutcome, nowMinutes, clockLabel, loggedInPhase,
     breaksLabel,
     formatCountdown, getConfig, getTimezone, initThemeToggle,
     lottieLib, toast, confettiBurst, initAdvisory,
-    createMissedPredictionWatcher, createPredictionWatcher,
+    createPredictionWatcher,
     workHoursState, currentDayInTZ,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
     initNotifyToggle, createCountdownAlerter, ALERT_THRESHOLDS_S,

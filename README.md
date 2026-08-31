@@ -68,6 +68,23 @@ in them are deliberate and worth knowing before you change either:
 Set the environment variables from `.env.example` in the Vercel project
 settings. `CRON_SECRET` is required for the cron job to run at all.
 
+Three settings in `vercel.json` exist to stop Vercel doing things this app does
+not want, and removing any of them breaks production while local stays fine:
+
+- `"framework": null` and a no-op `buildCommand`. `public/` ships exactly as
+  authored. With a framework preset detected, a build step can transpile
+  `public/*.js` — and since `package.json` is `"type": "commonjs"`, an ES module
+  like `timer3d.js` comes out the other side as CommonJS, so the browser hits
+  `require is not defined` on its first `import`.
+- `includeFiles`. `server.js` reads `public/*.html` off disk to stamp in the CSP
+  nonce, and reads `vercel.json` to check the cron schedule. Vercel traces
+  `require()`, not `fs.readFileSync(path.join(...))`, so those files have to be
+  named or they are missing from the function bundle.
+- The route order. `/`, `/admin` and `/api/*` reach Express **before**
+  `handle: filesystem`; everything else is served straight from `public/` by the
+  CDN. Serving the two HTML documents statically would skip the nonce and break
+  the importmap the 3D countdown needs.
+
 ### How many phases a day gets
 
 The number of roam phases is decided by the data, not fixed. An hour becomes a

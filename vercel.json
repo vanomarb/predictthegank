@@ -1,6 +1,20 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "echo 'no build step: public/ ships exactly as authored'",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "{public/**,vercel.json}"
+    }
+  },
   "routes": [
+    { "src": "/api/(.*)", "dest": "/api/index" },
+    { "src": "/", "dest": "/api/index" },
+    { "src": "/index\\.html", "dest": "/api/index" },
+    { "src": "/admin/?", "dest": "/api/index" },
+    { "src": "/admin\\.html", "dest": "/api/index" },
+    { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/api/index" }
   ],
   "crons": [
