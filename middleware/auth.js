@@ -24,6 +24,19 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Decodes the session cookie if present but never rejects — used by endpoints
+// that serve both the public, unauthenticated page and the admin dashboard.
+function optionalAuth(req, res, next) {
+  const token = req.cookies && req.cookies.session;
+  if (!token) return next();
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+  } catch (e) {
+    // Expired/invalid token on a route that doesn't require auth — ignore it.
+  }
+  next();
+}
+
 function signToken(account) {
   return jwt.sign(
     { id: account.id, name: account.name, isAdmin: !!account.is_admin },
@@ -32,4 +45,4 @@ function signToken(account) {
   );
 }
 
-module.exports = { requireAuth, requireAdmin, signToken };
+module.exports = { requireAuth, requireAdmin, optionalAuth, signToken };

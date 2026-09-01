@@ -1,0 +1,123 @@
+/* ============================================================
+   Field Tracker design tokens — shared across the public tracker and the admin
+   console. A night-vision field kit for spotting the office HR "in the wild,"
+   with a paper-daylight mode alongside it. One accent hue throughout (amber) —
+   simple on purpose.
+
+   This file deliberately contains NO class selectors. Everything visual is a
+   Tailwind utility (see tailwind-config.js, which turns these tokens into
+   utilities and holds every keyframe). What is left here is the part that
+   cannot be a utility:
+
+     - the tokens themselves, because they are read at runtime — timer3d.js
+       pulls --text-primary / --amber-500 / --status-bad through
+       getComputedStyle to colour the 3D digits, viz.js returns var(--heat-N)
+       strings for heatmap cells, and the keyframes in tailwind-config.js
+       reference --status-good-rgb / --status-bad-rgb;
+     - the light/dark switch, which flips those same tokens so every colour
+       utility re-themes without a dark: variant;
+     - one global reduced-motion guard, which has to reach every animation on
+       the page including the ones JS attaches at runtime.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+:root {
+  /* light (default) — warm paper, not stark white */
+  --ink-950: #f4f1e6;
+  --ink-900: #ffffff;
+  --ink-800: #efe9d8;
+  --ink-700: #e2dabf;
+  --line: rgba(26, 22, 10, 0.10);
+  --line-strong: rgba(26, 22, 10, 0.20);
+
+  --text-primary: #1c1811;
+  --text-secondary: #5a5240;
+  --text-muted: #8a8268;
+
+  /* signal amber — the one accent hue in this system, used for everything
+     that needs emphasis (buttons, links, focus, the featured prediction) */
+  --amber-300: #b4780f;
+  --amber-400: #a5690a;
+  --amber-500: #f2a93b;
+  --amber-700: #7a5210;
+  --amber-ink: #17110a; /* text color placed ON amber-500 fills */
+
+  --status-good: #2e7d34;
+  --status-bad: #b23a26;
+  --status-good-rgb: 46, 125, 52;
+  --status-bad-rgb: 178, 58, 38;
+
+  /* heatmap sequential ramp — single hue, monotone light -> dark (light surface) */
+  --heat-0: rgba(160, 108, 20, 0.05);
+  --heat-1: #fbe6bd;
+  --heat-2: #f2c67e;
+  --heat-3: #e0a03f;
+  --heat-4: #b97a1f;
+  --heat-5: #7a5210;
+
+  --glow-1: rgba(165, 105, 10, 0.10);
+  --glow-2: rgba(165, 105, 10, 0.07);
+
+  /* One family throughout — Poppins. The three names are kept because
+     timer3d.js and the utility bridge both reference them, and because they
+     still describe three different voices even at one family: display is the
+     heavy end (headings, the countdown, stat numbers), body is text, and "mono"
+     is the small uppercase label voice (a misnomer since it stopped being a
+     monospace, but it is referenced from several places). */
+  --font-display: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-body: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  color-scheme: light;
+}
+
+/* dark — night-vision field kit. Opt-in via the theme button
+   (public.js/admin.js), persisted in localStorage. Sequential ramp direction
+   flips (dark -> light = low -> high), same rule as the light ramp reversed. */
+:root[data-theme="dark"] {
+  --ink-950: #0a1310;
+  --ink-900: #0f1c17;
+  --ink-800: #16281f;
+  --ink-700: #1e3428;
+  --line: rgba(243, 241, 231, 0.09);
+  --line-strong: rgba(243, 241, 231, 0.16);
+
+  --text-primary: #f3f1e7;
+  --text-secondary: #a9bcb0;
+  --text-muted: #6c8074;
+
+  --amber-300: #ffcc7a;
+  --amber-400: #ffb648;
+  --amber-500: #f2a93b;
+  --amber-700: #a06c1c;
+  --amber-ink: #17110a;
+
+  --status-good: #6fcf7b;
+  --status-bad: #ef6a5a;
+  --status-good-rgb: 111, 207, 123;
+  --status-bad-rgb: 239, 106, 90;
+
+  --heat-0: rgba(255, 182, 72, 0.05);
+  --heat-1: #3a2c14;
+  --heat-2: #6b4a18;
+  --heat-3: #9c6b1c;
+  --heat-4: #d08f20;
+  --heat-5: #ffb648;
+
+  --glow-1: rgba(255, 182, 72, 0.08);
+  --glow-2: rgba(255, 182, 72, 0.06);
+
+  color-scheme: dark;
+}
+
+/* Kept as a global rather than motion-reduce: variants scattered through the
+   markup, because it also has to cover the animations JS attaches at runtime
+   (confetti pieces, toasts, the countdown's urgent glow). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
