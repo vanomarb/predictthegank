@@ -1192,10 +1192,11 @@ const Tracker = (() => {
   // could show three MISSED badges and a "Called it!" modal over the top of
   // them, on the same data, and both were behaving as designed. One rule now.
   //
-  // The wildcard is deliberately not part of it: it is the chance of a roam in
-  // the gap AFTER this phase, it lands outside the range, and waiting for it
-  // would hold the verdict back an hour past the thing it is judging. It keeps
-  // its own badge.
+  // The wildcard is deliberately not part of the phase's own tally: it is the
+  // chance of a roam in the gap AFTER this phase, it lands outside the range,
+  // and waiting for it would hold the phase's verdict back an hour past the
+  // thing it is judging. It keeps its own badge — and, below, its own miss
+  // check, judged against its own window rather than the phase's.
   //
   // Reports each phase once, when it CLOSES. Phases that had already closed when
   // the page opened are recorded as seen without firing: a modal about a window
@@ -1216,10 +1217,23 @@ const Tracker = (() => {
         && w.hourEnd != null
         && nowMin >= w.hourEnd * 60);
 
+      // A wildcard can be the moment "HAPPENING NOW" points at (nextMoment/
+      // allMoments don't exclude it) even though the phase tally above does —
+      // so without this, a wildcard that shows HAPPENING NOW and then passes
+      // unlogged never gets a follow-up toast, only the badge underneath it
+      // quietly turns red. Its own window, not the phase's hourEnd, decides
+      // when it's judged.
+      const wildcards = todayIsWorkDay
+        ? list
+          .map((w) => (w.tiers || []).find((t) => t.tier === 'wildcard'))
+          .filter((t) => t && t.windowTo != null && nowMin >= t.windowTo)
+        : [];
+
       // First call of the session: note what has already been and gone.
       if (!primed) {
         primed = true;
         closed.forEach((w) => reported.add(w.hourStart));
+        wildcards.forEach((t) => reported.add(`wildcard:${t.windowTo}`));
         return;
       }
 
@@ -1235,6 +1249,16 @@ const Tracker = (() => {
         if (hits > 0) {
           if (onHit) onHit(pick(HIT_PREDICTION_LINES), hits, moments.length);
         } else if (onMiss) {
+          onMiss(pick(MISSED_PREDICTION_LINES));
+        }
+      }
+
+      for (const t of wildcards) {
+        const key = `wildcard:${t.windowTo}`;
+        if (reported.has(key)) continue;
+        reported.add(key);
+        if (onMiss && momentOutcome(t, todayMinutes, nowMin,
+          { todayIsWorkDay, dayOffset: 0 }) === 'missed') {
           onMiss(pick(MISSED_PREDICTION_LINES));
         }
       }

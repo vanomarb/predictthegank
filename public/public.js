@@ -18,8 +18,23 @@
   const peakStat = document.getElementById('peakStat');
   const tooltip = Tracker.attachTooltip(document.getElementById('tooltip'));
   const spotBtn = document.getElementById('spotBtn');
+  const signInLabel = document.getElementById('signInLabel');
 
   Tracker.initThemeToggle(document.getElementById('themeToggle'));
+
+  // Whoever is signed in on /admin is signed in here too — same origin, same
+  // session cookie. Checked once at load so the spot button can attribute the
+  // sighting to that person instead of the shared "Anonymous" account, and so
+  // the header link reads as "you" rather than a permanent invitation to sign in.
+  let currentUser = null;
+  (async () => {
+    try {
+      currentUser = await Tracker.api('/auth/me');
+    } catch (e) {
+      currentUser = null; // not signed in — the ordinary, anonymous visitor
+    }
+    if (signInLabel) signInLabel.textContent = currentUser ? `${currentUser.name} · console` : 'sign in';
+  })();
 
   let timeZone = 'UTC';
   let workHours = null; // the office's logging window, from /api/config
@@ -705,9 +720,13 @@
     spotting = true;
     spotBtn.disabled = true;
     try {
-      const data = await Tracker.api('/sightings/anonymous', { method: 'POST' });
+      // Signed-in visitors (checked at load) log under their own account, same
+      // as the admin console's log button; everyone else logs anonymously.
+      const path = currentUser ? '/sightings' : '/sightings/anonymous';
+      const data = await Tracker.api(path, { method: 'POST' });
       playConfettiLottie(spotBtn);
       if (data.alreadyLogged) showToast('Someone already logged this one moments ago.');
+      else if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
       else showToast('Logged! Thanks for the tip.');
       await pollStats();
     } catch (e) {

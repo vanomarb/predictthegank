@@ -13,8 +13,14 @@
   // attribute selector outranks the base utilities, whereas a second competing
   // utility would be resolved by compiled source order, which is arbitrary.
   const RIPPLE = 'pointer-events-none absolute animate-ripple rounded-full bg-[rgba(23,17,10,0.35)]';
-  const ENTRY = 'flex justify-between border-b border-line px-3.5 py-3 text-[13px] last:border-b-0';
+  const ENTRY = 'flex items-center justify-between gap-2.5 border-b border-line px-3.5 py-3 text-[13px] last:border-b-0';
   const ENTRY_TIME = 'tabular-nums text-fg';
+  const ENTRY_LEFT = 'flex min-w-0 items-center gap-2.5';
+  const ENTRY_RIGHT = 'flex shrink-0 items-center gap-2.5';
+  const ROW_CHECK = 'log-row-check shrink-0 cursor-pointer accent-amber-500';
+  const ROW_DELETE = 'log-row-delete inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full '
+    + 'border border-transparent text-fg-faint transition-colors duration-150 hover:border-bad hover:text-bad '
+    + 'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400';
   const PILL = 'inline-flex items-center gap-[7px] rounded-full border border-line bg-ink-800 py-[7px] pr-3 pl-2 text-[13px]';
   const PILL_COUNT = 'tabular-nums text-amber-300';
   const INVITE_ROW = 'flex items-center justify-between gap-2.5 border-b border-line py-2.5 text-[13px] tabular-nums last:border-b-0';
@@ -276,23 +282,102 @@
   });
 
   // ---- rendering ----
+  // Which rows the admin has checked for bulk delete. Module-scoped, not tied
+  // to one renderList call, because the 5s poller rebuilds #logList's markup
+  // out from under any mid-selection checkboxes — same problem openState
+  // solves for the phase cards above.
+  const selectedLogIds = new Set();
+
+  function syncLogBulkBar() {
+    if (!currentUser || !currentUser.isAdmin) return;
+    const rowChecks = [...el('logList').querySelectorAll('.log-row-check')];
+    const checkedCount = selectedLogIds.size;
+    const delBtn = el('logDeleteSelectedBtn');
+    delBtn.disabled = checkedCount === 0;
+    delBtn.textContent = checkedCount > 0 ? `Delete selected (${checkedCount})` : 'Delete selected';
+    const selectAll = el('logSelectAll');
+    selectAll.checked = rowChecks.length > 0 && checkedCount === rowChecks.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < rowChecks.length;
+  }
+
   async function renderList(sightings) {
     const list = el('logList');
+    // Drop selections for rows that no longer exist (deleted elsewhere, or
+    // aged off the 500-row window) so a stale id can't ride along into a
+    // future bulk delete.
+    const liveIds = new Set(sightings.map((s) => s.id));
+    for (const id of selectedLogIds) if (!liveIds.has(id)) selectedLogIds.delete(id);
+
     if (sightings.length === 0) {
       list.innerHTML = `<div class="${EMPTY}">No entries yet.</div>`;
+      syncLogBulkBar();
       return;
     }
     // Render in the server's configured TIMEZONE, not the viewer's own browser
     // timezone — otherwise this list can disagree with the heatmap (which is
     // always TIMEZONE-bucketed) badly enough to show a different weekday.
     const timeZone = await Tracker.getTimezone();
+    const isAdmin = !!(currentUser && currentUser.isAdmin);
+    const xIcon = typeof Icons !== 'undefined' ? Icons.svg('x', { size: '0.85em' }) : '×';
     list.innerHTML = sightings.map((s) => {
       const d = new Date(s.ts * 1000);
       const label = d.toLocaleString(undefined, { timeZone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-      return `<div class="${ENTRY}"><time class="${ENTRY_TIME}">${label}</time>`
-        + `<span class="text-fg-muted">${s.logged_by}</span></div>`;
+      const checked = selectedLogIds.has(s.id) ? ' checked' : '';
+      return `<div class="${ENTRY}">`
+        + `<div class="${ENTRY_LEFT}">`
+        + (isAdmin ? `<input type="checkbox" class="${ROW_CHECK}" data-id="${s.id}"${checked}>` : '')
+        + `<time class="${ENTRY_TIME}">${label}</time></div>`
+        + `<div class="${ENTRY_RIGHT}"><span class="text-fg-muted">${s.logged_by}</span>`
+        + (isAdmin ? `<button type="button" class="${ROW_DELETE}" data-id="${s.id}" aria-label="Delete entry">${xIcon}</button>` : '')
+        + `</div></div>`;
     }).join('');
+    syncLogBulkBar();
   }
+
+  // Delegated on the container, not per-row: renderList rebuilds #logList's
+  // innerHTML on every 5s poll, which would silently drop per-element listeners.
+  el('logList').addEventListener('change', (e) => {
+    const cb = e.target.closest('.log-row-check');
+    if (!cb) return;
+    const id = Number(cb.dataset.id);
+    if (cb.checked) selectedLogIds.add(id); else selectedLogIds.delete(id);
+    syncLogBulkBar();
+  });
+
+  el('logList').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.log-row-delete');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    if (!window.confirm('Delete this entry? This cannot be undone.')) return;
+    try {
+      await Tracker.api(`/sightings/${id}`, { method: 'DELETE' });
+      selectedLogIds.delete(id);
+      showToast('Entry deleted.');
+      await refresh();
+    } catch (err) { showToast(err.message); }
+  });
+
+  el('logSelectAll').addEventListener('change', (e) => {
+    const rowChecks = [...el('logList').querySelectorAll('.log-row-check')];
+    rowChecks.forEach((cb) => {
+      cb.checked = e.target.checked;
+      const id = Number(cb.dataset.id);
+      if (e.target.checked) selectedLogIds.add(id); else selectedLogIds.delete(id);
+    });
+    syncLogBulkBar();
+  });
+
+  el('logDeleteSelectedBtn').addEventListener('click', async () => {
+    const ids = [...selectedLogIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} selected ${ids.length === 1 ? 'entry' : 'entries'}? This cannot be undone.`)) return;
+    try {
+      await Tracker.api('/sightings', { method: 'DELETE', body: { ids } });
+      selectedLogIds.clear();
+      showToast('Entries deleted.');
+      await refresh();
+    } catch (err) { showToast(err.message); }
+  });
 
   let timeZone = 'UTC';
   let workHours = null; // the office's logging window, from /api/config
@@ -499,6 +584,7 @@
     el('appView').style.display = 'block';
     el('whoamiText').textContent = currentUser.name;
     el('invitesTabBtn').style.display = currentUser.isAdmin ? '' : 'none';
+    el('logBulkBar').style.display = currentUser.isAdmin ? '' : 'none';
     if (currentUser.isAdmin) loadInvites();
     poller = Tracker.createPoller(refresh, POLL_MS);
     poller.start();

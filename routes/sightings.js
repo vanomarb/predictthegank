@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { requireAuth, optionalAuth } = require('../middleware/auth');
+const { requireAuth, requireAdmin, optionalAuth } = require('../middleware/auth');
 const { getSmartWindows, sanitizeWindows, sanitizeWildcards } = require('../services/gemini');
 const settings = require('../services/settings');
 const { getOrCreateSystemAccountId } = require('../services/system-accounts');
@@ -666,6 +666,51 @@ router.get('/', requireAuth, async (req, res, next) => {
     res.json({ sightings: rows });
   } catch (e) {
     next(e);
+  }
+});
+
+// Admin bulk delete, from the field log's checkbox selection. Wipes each
+// sighting entirely regardless of who logged it — unlike /mine/latest, which
+// only ever removes the caller's own contribution.
+router.delete('/', requireAuth, requireAdmin, async (req, res, next) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+  if (ids.length === 0) return res.status(400).json({ error: 'No entries selected.' });
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [SIGHTING_LOCK_KEY]);
+    await client.query('DELETE FROM sighting_logs WHERE sighting_id = ANY($1)', [ids]);
+    const { rowCount } = await client.query('DELETE FROM sightings WHERE id = ANY($1)', [ids]);
+    await client.query('COMMIT');
+    res.json({ ok: true, deleted: rowCount });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    next(e);
+  } finally {
+    client.release();
+  }
+});
+
+// Admin single-entry delete, from the field log's per-row delete button.
+router.delete('/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid id.' });
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [SIGHTING_LOCK_KEY]);
+    await client.query('DELETE FROM sighting_logs WHERE sighting_id = $1', [id]);
+    const { rowCount } = await client.query('DELETE FROM sightings WHERE id = $1', [id]);
+    await client.query('COMMIT');
+    if (rowCount === 0) return res.status(404).json({ error: 'Entry not found.' });
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    next(e);
+  } finally {
+    client.release();
   }
 });
 

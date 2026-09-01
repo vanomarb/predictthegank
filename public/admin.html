@@ -174,6 +174,15 @@
 
     <section id="panel-log" class="hidden data-active:block">
       <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))]">
+        <!-- Admin only — see switchToApp in admin.js, which mirrors invitesTabBtn's gating. -->
+        <div id="logBulkBar" style="display:none;" class="flex items-center justify-between gap-2.5 border-b border-line px-3.5 py-2.5">
+          <label class="flex cursor-pointer items-center gap-2 text-[13px] text-fg-muted">
+            <input id="logSelectAll" type="checkbox" class="accent-amber-500">
+            Select all
+          </label>
+          <button id="logDeleteSelectedBtn" type="button" disabled
+                  class="cursor-pointer rounded-md border border-line-strong bg-transparent px-3 py-1.5 text-[12px] font-semibold text-fg-muted transition-colors duration-150 hover:border-bad hover:text-bad focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-40">Delete selected</button>
+        </div>
         <div id="logList"></div>
       </div>
     </section>
