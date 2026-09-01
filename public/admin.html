@@ -116,6 +116,18 @@
 
     <p id="logHint" class="mt-[-6px] mb-[18px] text-xs tabular-nums text-fg-faint"></p>
 
+    <!-- Click a day to swap the phase cards (Activity tab, below) for THAT
+         day's own frozen phases (see phase_history in routes/sightings.js) —
+         its own predicted times, judged against what it actually saw. The
+         countdown/hero above is untouched; it's always about today. -->
+    <div class="mb-[18px]">
+      <div class="mb-2 flex items-baseline justify-between gap-3">
+        <p class="text-[11px] uppercase tracking-[0.1em] text-fg-faint">Recent work days</p>
+        <p class="text-[11px] text-fg-faint">click a day to see its own predicted phases</p>
+      </div>
+      <div id="dayTimeline" class="flex gap-2 overflow-x-auto pb-1"></div>
+    </div>
+
     <nav class="mt-[26px] mb-4 flex gap-1 overflow-x-auto border-b border-line">
       <button data-tab="activity" type="button" data-active
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Activity</button>

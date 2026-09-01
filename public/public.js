@@ -13,6 +13,7 @@
   const phasesNote = document.getElementById('phasesNote');
   const breakNote = document.getElementById('breakNote');
   const spotHint = document.getElementById('spotHint');
+  const dayTimeline = document.getElementById('dayTimeline');
   const heatmapGrid = document.getElementById('heatmapGrid');
   const totalStat = document.getElementById('totalStat');
   const peakStat = document.getElementById('peakStat');
@@ -47,6 +48,54 @@
   // reading session, not a preference.
   const openState = new Map();
   let timer3d = null;
+
+  // ---- day filter (Recent work days row) ----
+  // Picking a day swaps the phase cards for THAT day's own frozen phases (see
+  // phase_history / snapshotTodayPhases in routes/sightings.js) — its own
+  // predicted times, judged against what it actually saw — rather than
+  // re-coloring today's live cards. The pattern moves as new sightings come
+  // in, so a past day's own predictions can genuinely differ from today's;
+  // showing today's times under a different day's verdict would just be
+  // wrong. The live countdown/hero above is untouched either way — it is
+  // always about today. null means "live": follow today, the default.
+  let selectedDate = null;
+  let dayHistory = []; // this poll's Recent work days entries — see /api/sightings/stats' `history`
+
+  // The day currently driving the phase cards, or null for "use today's live data".
+  function activeDay() {
+    if (!selectedDate) return null;
+    return dayHistory.find((d) => d.date === selectedDate) || null;
+  }
+  function activeMinutes() {
+    const day = activeDay();
+    return day ? day.minutes : todayMinutes;
+  }
+  // A picked PAST day is fully over, so every window in it should read as
+  // closed; today (picked or live) is judged as far as the clock has actually
+  // gotten, same as always.
+  function activeNowMin() {
+    const day = activeDay();
+    return day && !day.today ? 1440 : Tracker.nowMinutes(timeZone);
+  }
+  // Whichever windows the phase cards should show right now: the selected
+  // day's own frozen phases, or live `phases` if nothing is selected — or if
+  // the selection has no snapshot yet (today, still in progress, or a deploy
+  // from before phase_history existed), same as this filter behaved before
+  // the history table. Re-evaluated on every render (poll or click) so a
+  // frozen selection survives the 5s poll instead of being overwritten by it.
+  function activeCardsWindows() {
+    const day = activeDay();
+    return day && Array.isArray(day.windows)
+      ? Tracker.classifyFinishedDay(Tracker.normalizeWindows({ windows: day.windows, smartWindows: day.smartWindows }))
+      : phases;
+  }
+  function onDaySelect(date) {
+    // Clicking the already-selected day is how you let go of it and return to
+    // today's live cards — there is no separate "today" button to click back to.
+    selectedDate = selectedDate === date ? null : date;
+    renderPhaseCards(activeCardsWindows());
+    Tracker.renderDayTimeline(dayTimeline, dayHistory, selectedDate, onDaySelect);
+  }
 
   const OPEN_HINT = spotHint.textContent;
 
@@ -391,7 +440,7 @@
   const VERDICT_MISS = `${VERDICT} border-bad bg-[rgba(var(--status-bad-rgb),0.12)] text-bad`;
 
   function verdictBadge(row) {
-    const outcome = Tracker.momentOutcome(row, todayMinutes, Tracker.nowMinutes(timeZone), featured || {});
+    const outcome = Tracker.momentOutcome(row, activeMinutes(), activeNowMin(), featured || {});
     if (!outcome) return '';
     return outcome === 'hit'
       ? `<span class="${VERDICT_HIT}" title="A sighting was logged in the predicted minute">Hit</span>`
@@ -428,11 +477,11 @@
     // "nothing logged yet", which on tomorrow's card reads as a verdict on a day
     // that has not started.
     if (!w.showingToday) return '';
-    const rows = Tracker.loggedInPhase(w, todayMinutes);
+    const rows = Tracker.loggedInPhase(w, activeMinutes());
     if (rows.length === 0) {
       // Only once the range has closed is "nothing" an outcome rather than a
       // window still waiting to be filled.
-      const closed = Tracker.nowMinutes(timeZone) >= w.hourEnd * 60 && w.todayIsWorkDay !== false;
+      const closed = activeNowMin() >= w.hourEnd * 60 && w.todayIsWorkDay !== false;
       return `<span class="${PHASE_NONE}">${closed ? 'no logs — missed' : 'nothing logged yet'}</span>`;
     }
     const shown = rows.slice(0, 3).map((r) => r.label).join(', ');
@@ -442,7 +491,7 @@
   }
 
   function loggedRows(w) {
-    const rows = Tracker.loggedInPhase(w, todayMinutes);
+    const rows = Tracker.loggedInPhase(w, activeMinutes());
     if (rows.length === 0) return '';
     return `
       <div class="${LOGGED_HEAD}" data-logged="head">Logged in this window · ${rows.length}</div>
@@ -471,16 +520,20 @@
   // 100px of column, and "projected from the usual 53-minute gap" came out as a
   // seven-line ribbon. Under 480px the note drops to its own full-width line
   // underneath instead, with the time and badge sharing the one above.
-  // Hidden while the phase above it is collapsed. The wildcard belongs to that
-  // phase — it is the chance of a roam on the way OUT of it — so a row of
-  // collapsed cards with dangling projections between them reads as three
-  // wildcards belonging to nothing.
+  // Hidden while the phase above it is collapsed AND its own countdown has
+  // moved on — a row of collapsed cards with dangling projections between
+  // them reads as three wildcards belonging to nothing. The one exception is
+  // `data-force`: once the countdown's target IS this wildcard (its phase's
+  // own moments are done, by time or by an early satisfy — see
+  // classifyWindows' wildcardFeatured), the phase card itself collapses and
+  // strikes through, but the wildcard it's still counting down to has to stay
+  // visible, or the countdown would be pointing at nothing on screen.
   //
   // The adjacent-sibling selector, not Tailwind's `peer`: peer variants use the
   // general sibling combinator, so every wildcard after the one open card would
   // match it and show. `details[open] + &` is true only for the card directly
   // above.
-  const WILD_LINK = 'mx-5 hidden [details[open]+&]:flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-dashed border-line py-1.5 pl-4';
+  const WILD_LINK = 'mx-5 hidden [details[open]+&]:flex data-force:flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-dashed border-line py-1.5 pl-4';
   const WILD_TIME = 'shrink-0 text-[15px] font-semibold tabular-nums text-fg-muted min-[481px]:w-[68px]';
   const WILD_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint '
     + 'max-[480px]:order-last max-[480px]:w-full max-[480px]:flex-none';
@@ -591,6 +644,14 @@
         phasesNote.textContent = `${left} of ${windows.length} still to come`;
       }
     }
+    renderPhaseCards(activeCardsWindows());
+  }
+
+  // Just the cards: hourStart/tiers/badges, nothing about the hero above them.
+  // Split out of renderTiers so the "Recent work days" filter (onDaySelect)
+  // can swap these for a picked day's own frozen phases without touching the
+  // live countdown, which stays about today no matter what day is selected.
+  function renderPhaseCards(windows) {
     // Only the phase in play is expanded BY DEFAULT — but a card the reader has
     // opened stays open, and one they have shut stays shut.
     //
@@ -626,7 +687,7 @@
         ${loggedRows(w)}
       </details>
       ${wildcardOf(w) ? `
-        <div class="${WILD_LINK}" data-wildcard>
+        <div class="${WILD_LINK}" data-wildcard ${w.wildcardFeatured ? 'data-force' : ''}>
           <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
           <span class="${WILD_SUB}">${tierSubtitle(wildcardOf(w))}</span>
           ${verdictBadge(wildcardOf(w))}
@@ -674,12 +735,14 @@
       note.style.display = 'inline-flex';
     }
     todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
-    const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
+    dayHistory = Array.isArray(stats.history) ? stats.history : [];
+    const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours, todayMinutes);
     phases = windows;
     renderTiers(windows, stats.total);
     // Same inputs the badges use, so the two cannot drift apart.
     checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
       { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
+    Tracker.renderDayTimeline(dayTimeline, dayHistory, selectedDate, onDaySelect);
     Tracker.renderHeatmap(heatmapGrid, stats.heatmap, tooltip);
     totalStat.textContent = stats.total;
     peakStat.textContent = Tracker.peakLabel(stats);
@@ -725,9 +788,17 @@
       const path = currentUser ? '/sightings' : '/sightings/anonymous';
       const data = await Tracker.api(path, { method: 'POST' });
       playConfettiLottie(spotBtn);
-      if (data.alreadyLogged) showToast('Someone already logged this one moments ago.');
-      else if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
-      else showToast('Logged! Thanks for the tip.');
+      if (data.alreadyLogged) {
+        showToast('Someone already logged this one moments ago.');
+      } else {
+        if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
+        else showToast('Logged! Thanks for the tip.');
+        // Immediate verdict on THIS log, same rule as the badges — not the
+        // phase-close sweep's recap of the whole hour, but "did what I just
+        // did land on a predicted minute," told right away.
+        const { hit, line } = Tracker.loggedOutcome(phases, Tracker.nowMinutes(timeZone));
+        if (hit) hitModal.show(line); else missModal.show(line);
+      }
       await pollStats();
     } catch (e) {
       showToast(e.message);

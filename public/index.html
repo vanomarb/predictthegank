@@ -97,6 +97,18 @@
           needed. Please don't spam it.</p>
       </div>
 
+      <!-- Click a day to swap the phase cards below for THAT day's own frozen
+         phases (see phase_history in routes/sightings.js) — its own predicted
+         times, judged against what it actually saw. The countdown/hero above
+         is untouched; it's always about today. -->
+      <div class="mx-auto mt-2 max-w-[560px] text-left">
+        <div class="mb-2.5 flex items-baseline justify-between gap-3">
+          <p class="text-xs uppercase tracking-[0.12em] text-fg-faint">Recent work days</p>
+          <p class="text-[11px] text-fg-faint">click a day to see its own predicted phases</p>
+        </div>
+        <div id="dayTimeline" class="flex gap-2 overflow-x-auto pb-1"></div>
+      </div>
+
       <div class="mx-auto mt-8 max-w-[560px] text-left">
         <div class="mb-2.5 flex items-baseline justify-between gap-3">
           <p class="text-xs uppercase tracking-[0.12em] text-fg-faint">Roam phases</p>
