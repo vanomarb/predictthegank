@@ -86,20 +86,20 @@
 </div>
 
 <div id="appView" style="display:none;">
-  <header class="mx-auto flex w-full max-w-[760px] flex-wrap items-center justify-between gap-2.5 px-5 pt-[22px]">
-    <a href="/" class="flex items-center gap-2.5 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-amber-400">
+  <header class="mx-auto flex w-full max-w-[760px] items-center justify-between gap-2.5 px-5 pt-[22px]">
+    <a href="/" class="flex min-w-0 items-center gap-2.5 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-amber-400">
       <img src="/logo.png" alt="" width="26" height="26" class="size-[26px] shrink-0 dark:invert max-[380px]:size-[22px]">
-      <span class="text-[13px] uppercase tracking-[0.1em] text-fg-muted max-[380px]:text-[11px]">Predict the Gank</span>
+      <span class="min-w-0 truncate text-[13px] uppercase tracking-[0.1em] text-fg-muted max-[380px]:text-[11px]">Predict the Gank</span>
     </a>
-    <div class="flex items-center gap-2 max-[380px]:flex-wrap max-[380px]:justify-end max-[380px]:gap-1.5">
+    <div class="flex min-w-0 items-center gap-2 max-[380px]:gap-1.5">
       <button id="notifyToggle" type="button" aria-label="Turn on roam alerts" aria-pressed="false"
-              class="inline-flex size-[34px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-amber-500 aria-pressed:text-amber-300"></button>
+              class="inline-flex size-[34px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-amber-500 aria-pressed:text-amber-300"></button>
       <button id="themeToggleApp" type="button" aria-label="Toggle light/dark theme"
-              class="inline-flex size-[34px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"></button>
-      <span class="inline-block size-[7px] animate-pulse-ring rounded-full bg-good"></span>
-      <span id="whoamiText" class="text-[13px] tabular-nums text-fg-muted max-[380px]:text-xs"></span>
+              class="inline-flex size-[34px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-[17px] text-fg-muted transition-colors duration-150 hover:bg-ink-800 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"></button>
+      <span class="inline-block size-[7px] shrink-0 animate-pulse-ring rounded-full bg-good"></span>
+      <span id="whoamiText" class="min-w-0 truncate text-[13px] tabular-nums text-fg-muted max-[380px]:text-xs"></span>
       <button id="logoutBtn" type="button"
-              class="cursor-pointer rounded-md border border-line bg-transparent px-[18px] py-3 text-sm font-semibold text-fg-muted transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Sign out</button>
+              class="shrink-0 cursor-pointer rounded-md border border-line bg-transparent px-[18px] py-3 text-sm font-semibold text-fg-muted transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] max-[380px]:px-2.5">Sign out</button>
     </div>
   </header>
 
@@ -121,7 +121,7 @@
          its own predicted times, judged against what it actually saw. The
          countdown/hero above is untouched; it's always about today. -->
     <div class="mb-[18px]">
-      <div class="mb-2 flex items-baseline justify-between gap-3">
+      <div class="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <p class="text-[11px] uppercase tracking-[0.1em] text-fg-faint">Recent work days</p>
         <p class="text-[11px] text-fg-faint">click a day to see its own predicted phases</p>
       </div>
@@ -157,7 +157,7 @@
         <p id="windowLabel" class="mb-1.5 text-[13px] tabular-nums text-fg-muted"></p>
         <p id="featuredDetail" class="text-[13px] text-fg-muted"></p>
         <p class="mt-4 mb-2 text-[10px] uppercase tracking-[0.1em] text-fg-faint">Roam phases</p>
-        <div id="tierChips" class="grid gap-2"></div>
+        <div id="tierChips" class="grid grid-cols-1 gap-2"></div>
       </div>
 
       <div class="mt-5 border-t border-line pt-5">
@@ -236,7 +236,7 @@
           </div>
         </div>
 
-        <div class="grid gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
+        <div class="grid grid-cols-1 gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
           <div>
             <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">AI model</p>
             <select id="cfModel" class="mt-1.5 w-full rounded-md border border-line-strong bg-ink-950 px-3 py-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400" aria-label="AI model"></select>
@@ -280,7 +280,7 @@
           <p id="cfMsg" class="text-[12px] text-fg-muted" role="status" aria-live="polite"></p>
         </div>
 
-        <div class="mt-6 grid gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
+        <div class="mt-6 grid grid-cols-1 gap-x-6 gap-y-4 border-t border-line pt-5 sm:grid-cols-2">
           <div>
             <p class="text-[10px] uppercase tracking-[0.1em] text-fg-faint">Provider</p>
             <p id="cfProvider" class="mt-1 text-[13px] text-fg">&mdash;</p>
@@ -330,7 +330,7 @@
       everyone.
     </p>
 
-    <ul class="mb-5 grid gap-2 text-left">
+    <ul class="mb-5 grid grid-cols-1 gap-2 text-left">
       <li class="flex items-start gap-2.5 rounded-xl border border-line bg-ink-950 px-3.5 py-2.5">
         <span class="mt-px shrink-0 text-good" data-icon="eye"></span>
         <span class="text-[12px] leading-snug text-fg-muted"><span class="font-semibold text-fg">Only log a roam you actually saw.</span> Not one you expect, and not one you heard about.</span>

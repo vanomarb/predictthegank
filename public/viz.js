@@ -419,7 +419,19 @@ const Tracker = (() => {
   // MISSED reads as "HR never came", when the truth is often "HR came at 2:24
   // and we said 2:07" — a different, more useful thing to know, and the only
   // way to see the prediction drifting rather than simply failing.
-  function loggedInPhase(w, todayMinutes) {
+  //
+  // `gapEndMin`, when given, extends the range past the phase's own hourEnd —
+  // up to the next phase (or the end of the office day) — so a sighting in the
+  // GAP after this phase, where nothing but a wildcard chance lives, still
+  // shows up under this card's own logged list instead of nowhere at all. A
+  // 10:48 sighting after a 9-10am phase, with nothing scheduled again until the
+  // afternoon, used to vanish: outside [hourStart, hourEnd), and no other card
+  // claimed it either. Matched against every tier INCLUDING the wildcard now —
+  // that exclusion only ever mattered because the wildcard's window never used
+  // to overlap [hourStart, hourEnd); once the range reaches into the gap the
+  // wildcard is aimed at, excluding it just means a sighting that landed
+  // exactly on the wildcard's own predicted moment reads as unpredicted.
+  function loggedInPhase(w, todayMinutes, gapEndMin) {
     if (!w || w.hourStart == null || w.hourEnd == null) return [];
     // TODAY's sightings, so only a card describing today may show them.
     //
@@ -431,8 +443,8 @@ const Tracker = (() => {
     // it did not happen on.
     if (w.showingToday === false) return [];
     const from = w.hourStart * 60;
-    const to = w.hourEnd * 60;
-    const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
+    const to = gapEndMin != null ? gapEndMin : w.hourEnd * 60;
+    const moments = w.tiers || [];
     return (todayMinutes || [])
       .filter((m) => m >= from && m < to)
       .sort((a, b) => a - b)
@@ -1279,6 +1291,21 @@ const Tracker = (() => {
     "Textbook. The model saw it coming.",
   ];
 
+  // Told to the person who JUST logged a sighting, when it landed outside
+  // every predicted minute — a different moment from MISSED_PREDICTION_LINES,
+  // which is read out when a whole window closes unwatched. The blame here
+  // has to land on the prediction, not the person: they saw something real
+  // and told everyone, which is the entire point of the button. "You logged
+  // wrong" would be a lie; "the algorithm called a different minute" is the
+  // truth.
+  const LOGGED_WRONG_LINES = [
+    "Logged. The algorithm called a different minute — that one's on it, not you.",
+    "Recorded. Nice catch — the prediction just missed the timing.",
+    "Noted, thanks. The model predicted wrong; you predicted nothing and still won.",
+    "Logged straight. The algorithm's guess just wasn't it.",
+    "Got it. Wrong minute, wrong model — right sighting.",
+  ];
+
   const pick = (lines) => lines[Math.floor(Math.random() * lines.length)];
 
   // Watches the currently-featured tier across polls and reports the outcome
@@ -1304,17 +1331,57 @@ const Tracker = (() => {
   // thing it is judging. It keeps its own badge — and, below, its own miss
   // check, judged against its own window rather than the phase's.
   //
-  // Reports each phase once, when it CLOSES. Phases that had already closed when
-  // the page opened are recorded as seen without firing: a modal about a window
-  // that ended before anyone loaded the page is not news, and three of them
-  // stacking up on a mid-afternoon refresh is worse.
+  // Reports each phase once, when it CLOSES. Phases that had already closed
+  // the FIRST TIME this browser ever watched today are recorded as seen
+  // without firing: a modal about a window that ended before anyone loaded
+  // the page is not news, and three of them stacking up on a mid-afternoon
+  // refresh is worse.
   //
-  // Takes { onHit, onMiss }; either may be omitted. onHit is given the number of
-  // predicted moments that landed, and how many there were.
+  // "reported" and that first-watch marker are persisted to localStorage
+  // (keyed by calendar day), not just held in the closure. A backgrounded tab
+  // is exactly the kind Chrome/Safari will silently discard and reload under
+  // memory pressure — the tab looks merely unfocused from the outside, but
+  // the JS context, and every in-memory Set, is gone. Without the persisted
+  // copy, that reload re-primes from scratch: any window that closed while
+  // the tab was away gets swept into "already seen" by the same rule meant
+  // for the page's true first load, and its hit/miss never surfaces — while
+  // the badge underneath, which reads todayMinutes fresh on every render,
+  // shows the correct verdict anyway. The two disagreeing is the bug: no
+  // modal, right badge.
+  //
+  // Takes { onHit, onMiss, storageKey }; onHit/onMiss may be omitted.
+  // storageKey namespaces the persisted state (default covers callers that
+  // don't care) — the public tracker and admin console each run their own
+  // watcher and should not silently consume each other's unreported windows.
+  // onHit is given the number of predicted moments that landed, and how many
+  // there were.
   function createPredictionWatcher(handlers) {
-    const { onHit, onMiss } = handlers || {};
-    const reported = new Set();
-    let primed = false;
+    const { onHit, onMiss, storageKey } = handlers || {};
+    const STORAGE_KEY = `hr:predictionWatcher:${storageKey || 'default'}`;
+
+    function todayKey() {
+      const d = new Date();
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    }
+
+    function loadReported() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        return parsed && parsed.day === todayKey() ? parsed : null;
+      } catch (e) { return null; } // private mode, corrupt JSON, no localStorage
+    }
+
+    function saveReported(set) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ day: todayKey(), reported: [...set] }));
+      } catch (e) { /* private mode — the tab just re-primes if it reloads */ }
+    }
+
+    const saved = loadReported();
+    const reported = new Set(saved ? saved.reported : []);
+    // Already primed earlier today (even if that was a prior, now-discarded
+    // page instance) — never re-silence a window on this instance's account.
+    let primed = !!saved;
 
     return function check(windows, todayMinutes, nowMin, opts) {
       const { todayIsWorkDay = true } = opts || {};
@@ -1335,17 +1402,20 @@ const Tracker = (() => {
           .filter((t) => t && t.windowTo != null && nowMin >= t.windowTo)
         : [];
 
-      // First call of the session: note what has already been and gone.
+      // First call of the day: note what has already been and gone.
       if (!primed) {
         primed = true;
         closed.forEach((w) => reported.add(w.hourStart));
         wildcards.forEach((t) => reported.add(`wildcard:${t.windowTo}`));
+        saveReported(reported);
         return;
       }
 
+      let changed = false;
       for (const w of closed) {
         if (reported.has(w.hourStart)) continue;
         reported.add(w.hourStart);
+        changed = true;
 
         const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
         if (moments.length === 0) continue;
@@ -1363,11 +1433,14 @@ const Tracker = (() => {
         const key = `wildcard:${t.windowTo}`;
         if (reported.has(key)) continue;
         reported.add(key);
+        changed = true;
         if (onMiss && momentOutcome(t, todayMinutes, nowMin,
           { todayIsWorkDay, dayOffset: 0 }) === 'missed') {
           onMiss(pick(MISSED_PREDICTION_LINES));
         }
       }
+
+      if (changed) saveReported(reported);
     };
   }
 
@@ -1381,7 +1454,7 @@ const Tracker = (() => {
   function loggedOutcome(windows, minute) {
     const hit = allMoments(windows).some((x) => x.moment.windowFrom != null
       && minute >= x.moment.windowFrom && minute < x.moment.windowTo);
-    return { hit, line: pick(hit ? HIT_PREDICTION_LINES : MISSED_PREDICTION_LINES) };
+    return { hit, line: pick(hit ? HIT_PREDICTION_LINES : LOGGED_WRONG_LINES) };
   }
 
   // setInterval wrapper paused via the Page Visibility API. Idempotent start.

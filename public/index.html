@@ -114,7 +114,7 @@
           <p class="text-xs uppercase tracking-[0.12em] text-fg-faint">Roam phases</p>
           <p id="phasesNote" class="text-[11px] text-fg-faint">in order, through the day</p>
         </div>
-        <div id="tierChips" class="grid gap-3"></div>
+        <div id="tierChips" class="grid grid-cols-1 gap-3"></div>
         <!-- Filled from /api/config. A gap in the middle of the day with no
            explanation reads as missing data; this says it is deliberate. -->
         <p id="breakNote" style="display:none;" class="mt-3 text-[11px] leading-snug text-fg-faint"></p>
@@ -187,7 +187,7 @@
         everyone.
       </p>
 
-      <ul class="mb-5 grid gap-2 text-left">
+      <ul class="mb-5 grid grid-cols-1 gap-2 text-left">
         <li class="flex items-start gap-2.5 rounded-xl border border-line bg-ink-950 px-3.5 py-2.5">
           <span class="mt-px shrink-0 text-good" data-icon="eye"></span>
           <span class="text-[12px] leading-snug text-fg-muted"><span class="font-semibold text-fg">Only log a roam you
@@ -246,6 +246,63 @@
       <p id="hitModalText" class="mb-5 text-sm text-fg-muted">HR turned up inside the predicted window.</p>
       <button id="hitModalOk" type="button"
         class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Obviously</button>
+    </div>
+  </div>
+
+  <!-- Shown right after logging a sighting that lands outside every predicted
+     minute — see the wrongModal note in public.js. Deliberately not the same
+     modal as a missed WINDOW (missedModal above): the person just did the
+     right thing by logging what they saw, so the tone here blames the
+     prediction, not them. No page-wide dud layer either — see makeOutcomeModal
+     in public.js. -->
+  <div id="wrongModal" style="display:none;"
+    class="fixed inset-0 z-[90] flex items-center justify-center bg-[rgba(10,8,4,0.55)] p-5">
+    <div
+      class="relative max-w-[380px] animate-modal-pop rounded-[20px] border border-line-strong bg-ink-900 px-7 py-8 text-center shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+      <button id="wrongModalClose" type="button" aria-label="Close"
+        class="absolute top-2.5 right-2.5 inline-flex size-[30px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-base leading-none text-fg-muted transition-colors duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"><span
+          data-icon="x"></span></button>
+      <!-- write-note.lottie.json draws in flat black strokes with a white fill
+         only behind the pencil (the notepad's own outline has no fill at
+         all) — fixed colours, baked into the file, that don't know this app
+         has a dark theme. On bg-ink-900 (near-black in dark mode) the black
+         notepad lines vanished into the background and only the white-filled
+         pencil stayed visible. dark:invert flips every pixel painted in here
+         when the dark theme is active — same trick the logo <img> already
+         uses in the header — so black strokes become white (visible again)
+         and the pencil's white fill becomes black (still has its own outline
+         for contrast, so it doesn't vanish in turn). -->
+      <div id="wrongModalArt"
+        class="mx-auto mb-1 flex h-[176px] w-[176px] items-center justify-center overflow-hidden dark:invert">
+        <!-- Fixed black, not a text-fg/amber theme token: a token's colour
+           already flips for dark mode on its own, and dark:invert would flip
+           it a second time, landing wrong in one theme or the other. Plain
+           black behaves exactly like the Lottie's own strokes above — invert
+           turns it white for the dark background, same mechanism, same
+           result. -->
+        <p class="text-[46px] leading-none text-[#111111]" data-icon="check"></p>
+      </div>
+      <h2 class="mb-2.5 text-[26px] font-semibold tracking-[-0.015em]">Logged. Wrong call, though.</h2>
+      <p id="wrongModalText" class="mb-5 text-sm text-fg-muted">Noted — the prediction missed the timing.</p>
+      <button id="wrongModalOk" type="button"
+        class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Fair enough</button>
+    </div>
+  </div>
+
+  <!-- What was actually logged in a phase's window, on demand — see the
+     loggedButton note in public.js. A plain scrollable list rather than a
+     fixed-content modal like hit/miss above, since the row count here is
+     whatever the day produced. -->
+  <div id="loggedModal" style="display:none;"
+    class="fixed inset-0 z-[90] flex items-center justify-center bg-[rgba(10,8,4,0.55)] p-5">
+    <div
+      class="relative max-h-[calc(100dvh-40px)] w-full max-w-[420px] overflow-y-auto animate-modal-pop rounded-[20px] border border-line-strong bg-ink-900 px-6 py-6 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+      <button id="loggedModalClose" type="button" aria-label="Close"
+        class="absolute top-2.5 right-2.5 inline-flex size-[30px] cursor-pointer items-center justify-center rounded-full border border-line bg-transparent p-0 text-base leading-none text-fg-muted transition-colors duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"><span
+          data-icon="x"></span></button>
+      <h2 id="loggedModalTitle" class="mb-1 pr-8 text-[18px] font-semibold tracking-[-0.01em] text-fg">Logged</h2>
+      <p id="loggedModalSub" class="mb-4 text-[12px] text-fg-muted"></p>
+      <div id="loggedModalRows" class="flex flex-col gap-1.5"></div>
     </div>
   </div>
 

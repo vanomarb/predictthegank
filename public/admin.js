@@ -33,13 +33,13 @@
   const PHASE_HEAD = 'flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 '
     + 'hover:bg-ink-900 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-400 '
     + 'group-data-featured:bg-[rgba(242,169,59,0.08)] [&::-webkit-details-marker]:hidden';
-  const PHASE_LEAD = 'text-[11px] tabular-nums text-fg-muted group-data-featured:text-amber-300';
+  const PHASE_LEAD = 'min-w-0 truncate text-[11px] tabular-nums text-fg-muted group-data-featured:text-amber-300';
   const PHASE_CARET = 'shrink-0 text-fg-faint transition-transform duration-200 group-open:rotate-180';
   const PHASE_NUM = 'inline-flex size-[18px] shrink-0 items-center justify-center rounded-full border border-line text-[9px] tabular-nums text-fg-faint '
     + 'group-data-featured:border-amber-500 group-data-featured:text-amber-300';
-  const PHASE_RANGE = 'text-[13px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
+  const PHASE_RANGE = 'shrink-0 text-[13px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
     + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
-  const PHASE_META = 'ml-auto text-[10px] tabular-nums text-fg-faint';
+  const PHASE_META = 'ml-auto min-w-0 truncate text-[10px] tabular-nums text-fg-faint';
   const TIER_ROW = 'flex items-center gap-2 border-t border-line px-3 py-1.5';
   // Whether each predicted moment landed — see the note in public.js. The
   // console shows them too: it is where the person most likely to care whether
@@ -100,6 +100,7 @@
   });
 
   const checkPrediction = Tracker.createPredictionWatcher({
+    storageKey: 'admin',
     onHit: (line, hits, moments) => {
       Tracker.notify('Called it — HR showed up', line, 'outcome');
       showToast(`Prediction hit · ${hits} of ${moments} predicted times landed`);
