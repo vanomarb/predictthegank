@@ -4,12 +4,20 @@ const { requireAuth, requireAdmin, optionalAuth } = require('../middleware/auth'
 const { getSmartWindows, sanitizeWindows, sanitizeWildcards } = require('../services/gemini');
 const settings = require('../services/settings');
 const { getOrCreateSystemAccountId } = require('../services/system-accounts');
-const { getWorkHours, getBreaks, getTimeZone, getPhaseCeiling } = require('../services/work-hours');
+const {
+  getWorkHours, getBreaks, getTimeZone, getPhaseCeiling, getMomentCeiling,
+} = require('../services/work-hours');
 
 // The confidence labels for the moments inside a range, strongest first. They
 // live here rather than in services/gemini.js because the model no longer
 // assigns them — the quarter-hour ranking in tiersForHour does.
-const TIERS = ['sure', 'likely', 'maybe'];
+//
+// Four long, not three: a phase is one hour split into four 15-minute quarters
+// (see quarterBuckets below), so four is the most tiers a phase can ever have
+// one quarter each for. getMomentCeiling() (1-4, see services/settings.js)
+// decides how many of these actually get used; TIERS itself always lists all
+// four so the ceiling can be raised without a code change.
+const TIERS = ['sure', 'likely', 'maybe', 'long-shot'];
 
 const router = express.Router();
 const DEDUP_WINDOW_SECONDS = 2 * 60;
@@ -253,17 +261,17 @@ function quarterBuckets(from, to, minutesOfDay, breaks) {
 const quarterLabel = (b) =>
   `:${String(b.from % 60).padStart(2, '0')}\u2013:${String(b.to % 60).padStart(2, '0')}`;
 
-function tiersForHour(minutesOfDay, hourStart, breaks, total) {
+function tiersForHour(minutesOfDay, hourStart, breaks, total, momentCeiling = getMomentCeiling()) {
   const base = hourStart * 60;
   const buckets = quarterBuckets(base, base + 60, minutesOfDay, breaks);
   // Busiest quarter first; ties break to the earlier one so the same data always
   // produces the same prediction.
   const ranked = buckets.slice().sort((a, b) => b.values.length - a.values.length || a.from - b.from);
 
-  // Fewer tiers than TIERS when breaks have eaten into the hour. Three of four
-  // quarters is the usual worst case; an hour with nothing left never gets here,
-  // computePhases drops it first.
-  return ranked.slice(0, TIERS.length).map((b, i) => {
+  // Fewer tiers than the ceiling when breaks have eaten into the hour, or when
+  // an admin has set the ceiling below 4. An hour with nothing left never gets
+  // here, computePhases drops it first.
+  return ranked.slice(0, momentCeiling).map((b, i) => {
     const at = b.values.length ? medianOf(b.values) : Math.round((b.from + b.to - 1) / 2);
     return {
       tier: TIERS[i],
@@ -537,9 +545,10 @@ async function recomputeSmartPrediction() {
     const { heatmap, sightingTimestamps, total } = await buildHeatmapAndPrediction();
     if (total === 0) return { ok: true, skipped: 'no sightings logged yet' };
     // The model is given the office's rules — work hours, work days, breaks —
-    // and how many phases the page has room for, so its ranges come back fitting
-    // the day they describe. It is also held to them on the way back; see
-    // sanitizeWindows in services/gemini.js.
+    // how many phases the page has room for, and how many moments each phase
+    // may show, so its ranges come back fitting the day they describe. It is
+    // also held to both ceilings on the way back; see sanitizeWindows in
+    // services/gemini.js.
     const smart = await getSmartWindows({
       sightingTimestamps,
       heatmap,
@@ -548,6 +557,7 @@ async function recomputeSmartPrediction() {
       breaks: getBreaks(),
       timeZone: getTimeZone(),
       maxWindows: getPhaseCeiling(),
+      maxMoments: getMomentCeiling(),
       // Whichever model is in force: an admin's dashboard choice, else
       // GEMINI_MODEL, else the built-in default. See services/settings.js.
       model: settings.get('aiModel'),
@@ -795,7 +805,9 @@ function buildSmartWindows({ stored, minutesOfDay, total }) {
   if (!stored) return null;
   const breaks = getBreaks();
   const workHours = getWorkHours();
-  const clean = sanitizeWindows(stored.windows, { workHours, breaks, max: getPhaseCeiling() });
+  const clean = sanitizeWindows(stored.windows, {
+    workHours, breaks, max: getPhaseCeiling(), maxMoments: getMomentCeiling(),
+  });
   const wilds = sanitizeWildcards(stored.wildcards, { workHours, breaks, windows: clean });
   return clean.map((w, i) => {
     const from = w.predictedHourStart * 60;

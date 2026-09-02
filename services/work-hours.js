@@ -48,11 +48,17 @@ const getTimeZone = () => settings.get('timeZone');
 // future free tier, where it would be the thing that gets capped.
 const getPhaseCeiling = () => settings.get('phaseCeiling');
 
+// How many predicted moments (sure/likely/maybe/long-shot) a single phase card
+// will show — the same "ceiling, not a target" idea as getPhaseCeiling, one
+// level down.
+const getMomentCeiling = () => settings.get('momentCeiling');
+
 module.exports = {
   getWorkHours,
   getBreaks,
   getTimeZone,
   getPhaseCeiling,
+  getMomentCeiling,
   DEFAULTS,
   DEFAULT_BREAKS: settings.DEFAULT_BREAKS,
   // Re-exported: it was part of this module's surface before the parsing moved.

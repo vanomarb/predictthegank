@@ -92,21 +92,42 @@ not want, and removing any of them breaks production while local stays fine:
   CDN. Serving the two HTML documents statically would skip the nonce and break
   the importmap the 3D countdown needs.
 
-### How many phases a day gets
+### How many phases a day gets, and how many predictions each one shows
 
 The number of roam phases is decided by the data, not fixed. An hour becomes a
 phase when it holds at least 10% of all sightings **and** at least 40% of the
-busiest hour's count; the busiest hour is always kept, and a ceiling of six
-stops the list turning into a log. So one busy hour gives one phase, four
-genuine clusters give four, and a strong peak with a scattered tail gives one
-rather than dressing two-sighting hours up as predictions.
+busiest hour's count; the busiest hour is always kept. So one busy hour gives
+one phase, four genuine clusters give four, and a strong peak with a scattered
+tail gives one rather than dressing two-sighting hours up as predictions.
 
-The ceiling (`PHASE_CEILING` in `routes/sightings.js`) is passed into
-`computePhases` as a parameter rather than read from the constant. That is
-deliberate: **if this ever becomes a product with accounts rather than one
-team's toy, this is the natural thing to meter** — a free tier capped at three
-phases, paid tiers up to the full ceiling — and threading a per-plan value
-through the caller needs no change to the statistics. Nothing is gated today.
+Two settings put a ceiling on that, both editable from the admin dashboard's
+Config tab (Max phases / Max predictions per phase), each falling back to an
+environment variable and then a built-in default — see `services/settings.js`
+for the precedence and `getPhaseCeiling`/`getMomentCeiling` in
+`services/work-hours.js` for the read side:
+
+- **`PHASE_CEILING`** (default 6, 1-12) — how many phase cards a day can show
+  at once. Read at the point of use, not captured in a constant, so an admin's
+  change takes effect on the next poll rather than the next deploy.
+- **`MOMENT_CEILING`** (default 3, 1-4) — how many predicted moments
+  (sure/likely/maybe/long-shot) each phase card shows. Capped at 4, not 12
+  like the phase ceiling: a phase is one hour split into four 15-minute
+  quarters (see `quarterBuckets`), so a fifth tier would have no quarter left
+  to occupy.
+
+Both ceilings apply identically to the statistical prediction and the
+Gemini-refined one: the AI prompt asks for exactly as many tiers as
+`MOMENT_CEILING` allows (see `buildPrompt` and `TIER_DEFS` in
+`services/gemini.js`), and `sanitizeMoments` drops anything beyond it on the
+way back, so lowering the ceiling after a smart prediction was already stored
+trims the extra tier immediately rather than at the next cron run.
+
+Both ceilings are passed into the statistics as parameters rather than read
+from a constant deep inside them. That is deliberate: **if this ever becomes a
+product with accounts rather than one team's toy, these are the natural things
+to meter** — a free tier capped at three phases and one moment each, paid tiers
+up to the full ceiling — and threading a per-plan value through the caller
+needs no change to the statistics themselves. Nothing is gated today.
 
 ### The daily prediction refresh
 

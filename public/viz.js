@@ -231,7 +231,9 @@ const Tracker = (() => {
     });
   }
 
-  const TIER_LABEL = { sure: 'Sure', likely: 'Likely', maybe: 'Maybe', wildcard: 'Wildcard' };
+  const TIER_LABEL = {
+    sure: 'Sure', likely: 'Likely', maybe: 'Maybe', 'long-shot': 'Long shot', wildcard: 'Wildcard',
+  };
 
   // Normalizes /api/sightings/stats' windows into a common shape, preferring
   // the Gemini-refined smartWindows when present (and well-formed) and falling

@@ -174,6 +174,23 @@ const SPEC = {
     check: (v) => isInt(v) && v >= 1 && v <= 12,
     text: String,
   },
+  // How many predicted moments (sure/likely/maybe/long-shot) a phase card may
+  // show. Capped at 4, not 12 like phaseCeiling: a phase is one hour split into
+  // four 15-minute quarters (see quarterBuckets in routes/sightings.js), so a
+  // fifth tier would have no quarter left to occupy — the statistical engine
+  // could never fill it, and asking Gemini for one just invites it to invent a
+  // moment outside that structure.
+  momentCeiling: {
+    key: 'moment_ceiling',
+    env: 'MOMENT_CEILING',
+    fallback: 3,
+    parse: (raw) => {
+      const n = Number.parseInt(raw, 10);
+      return isInt(n) && n >= 1 && n <= 4 ? n : null;
+    },
+    check: (v) => isInt(v) && v >= 1 && v <= 4,
+    text: String,
+  },
 };
 
 const FIELDS = Object.keys(SPEC);
@@ -249,6 +266,7 @@ function office() {
     workHours: { start, end, days: get('workDays') },
     breaks: get('breaks'),
     phaseCeiling: get('phaseCeiling'),
+    momentCeiling: get('momentCeiling'),
     aiModel: get('aiModel'),
   };
 }

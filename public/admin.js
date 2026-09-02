@@ -738,6 +738,7 @@
     fillOptions('cfWorkEnd', Array.from({ length: 24 }, (_, i) => i + 1), c.workEnd.value,
       (h) => (h === 24 ? 'midnight' : h12(h)));
     fillOptions('cfPhaseCeiling', Array.from({ length: 12 }, (_, i) => i + 1), c.phaseCeiling.value);
+    fillOptions('cfMomentCeiling', Array.from({ length: 4 }, (_, i) => i + 1), c.momentCeiling.value);
 
     el('cfBreaks').value = c.breaks.text;
     el('cfWorkDays').innerHTML = DAY_LABELS.map((name, i) => {
@@ -755,6 +756,7 @@
       ? sourceLine(c.workStart)
       : `${sourceLine(c.workStart)} / ${sourceLine(c.workEnd)}`;
     el('cfPhaseSrc').textContent = sourceLine(c.phaseCeiling);
+    el('cfMomentSrc').textContent = sourceLine(c.momentCeiling);
     el('cfWorkDaysSrc').textContent = sourceLine(c.workDays);
     el('cfBreaksSrc').textContent = sourceLine(c.breaks);
 
@@ -824,6 +826,7 @@
     workDays: [...el('cfWorkDays').querySelectorAll('input:checked')].map((i) => Number(i.value)),
     breaks: el('cfBreaks').value.trim(),
     phaseCeiling: Number(el('cfPhaseCeiling').value),
+    momentCeiling: Number(el('cfMomentCeiling').value),
   });
 
   el('cfReloadBtn').addEventListener('click', () => { loadConfig(); loadConfigLists(); });
@@ -859,7 +862,7 @@
     try {
       const cleared = {};
       for (const k of ['aiModel', 'timeZone', 'workStart', 'workEnd', 'workDays', 'breaks',
-        'phaseCeiling']) cleared[k] = null;
+        'phaseCeiling', 'momentCeiling']) cleared[k] = null;
       await Tracker.api('/admin/config', { method: 'PUT', body: cleared });
       await loadConfig();
       await loadConfigLists();
