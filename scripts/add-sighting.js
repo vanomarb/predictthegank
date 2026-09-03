@@ -6,6 +6,8 @@
  *   node scripts/add-sighting.js 14:09                 # 24h also works
  *   node scripts/add-sighting.js --date 2026-08-28 9:37am
  *   node scripts/add-sighting.js --dry-run 9:37am
+ *   node scripts/add-sighting.js --account jdoe 9:37am
+ *   node scripts/add-sighting.js --account 12 9:37am
  *
  * The "I see them" button can only ever log the current minute, which is right
  * for the button and useless for filling in a time that has already passed or
@@ -16,9 +18,14 @@
  * buckets into and the predictions are stated in — so "9:37am" here is the
  * 9:37am the page will show, whatever timezone the machine running this is in.
  *
- * Attributed to the shared "Seeded" system account rather than a real person:
- * these are not sightings anybody witnessed, and per-person attribution on the
- * admin console should not claim otherwise.
+ * Attributed to the shared "Seeded" system account by default — these are not
+ * sightings anybody witnessed, and per-person attribution on the admin console
+ * should not claim otherwise. Pass --account (an accounts.id, or the account's
+ * call sign) to attribute it to a real person instead, for backfilling a roam
+ * you actually saw but did not log in the moment. A flag, not a bare trailing
+ * argument: this script already takes any number of times as positional args,
+ * so a bare id after them would be ambiguous with a time — a 3+ digit id like
+ * "123" parses as a valid 1:23 just as readily as it names an account.
  */
 
 require('dotenv').config();
@@ -35,6 +42,25 @@ const DEDUP_WINDOW_SECONDS = 2 * 60;
 function fail(msg) {
   console.error(msg);
   process.exit(1);
+}
+
+// --account accepts either an accounts.id or a call sign (accounts.name is
+// what a person actually knows about their own login, not the opaque numeric
+// id) — purely numeric text is read as an id, anything else as a name. Fails
+// loudly rather than falling back to the "Seeded" account: silently seeding
+// under the wrong identity, or the shared one, when a real person was named
+// is worse than refusing to run.
+async function resolveAccountId(raw) {
+  const isNumeric = /^\d+$/.test(raw);
+  const row = isNumeric
+    ? await db.one('SELECT id, name FROM accounts WHERE id = $1', [Number(raw)])
+    : await db.one('SELECT id, name FROM accounts WHERE name = $1', [raw]);
+  if (!row) {
+    fail(isNumeric
+      ? `no account with id ${raw}`
+      : `no account named "${raw}" — call signs are case-sensitive`);
+  }
+  return row;
 }
 
 // "9:37am" | "2:09pm" | "14:09" | "9.37am" -> minutes since local midnight.
@@ -117,17 +143,25 @@ async function main() {
   const dryRun = args.includes('--dry-run');
   const dateIdx = args.indexOf('--date');
   const date = dateIdx === -1 ? todayInTZ() : args[dateIdx + 1];
-  // dateIdx + 1 is the value belonging to --date. Guard on dateIdx !== -1: with
-  // no --date present dateIdx is -1, so "skip dateIdx + 1" would skip index 0
-  // — silently dropping the FIRST time given, which is exactly what it did.
+  const accountIdx = args.indexOf('--account');
+  const accountArg = accountIdx === -1 ? null : args[accountIdx + 1];
+  // dateIdx + 1 / accountIdx + 1 are the values belonging to those flags.
+  // Guarded on the index being present: with a flag absent its indexOf is -1,
+  // so "skip idx + 1" would skip index 0 instead — silently dropping the
+  // FIRST time given, which is exactly what an earlier version of this did
+  // for --date.
   const dateValueIdx = dateIdx === -1 ? -1 : dateIdx + 1;
-  const times = args.filter((a, i) => !a.startsWith('--') && i !== dateValueIdx);
+  const accountValueIdx = accountIdx === -1 ? -1 : accountIdx + 1;
+  const times = args.filter((a, i) => !a.startsWith('--') && i !== dateValueIdx && i !== accountValueIdx);
 
   if (times.length === 0) {
-    fail('usage: node scripts/add-sighting.js [--date YYYY-MM-DD] [--dry-run] <time> [time...]\n'
-      + '   eg: node scripts/add-sighting.js 9:37am 2:09pm');
+    fail('usage: node scripts/add-sighting.js [--date YYYY-MM-DD] [--account id-or-name] [--dry-run] '
+      + '<time> [time...]\n'
+      + '   eg: node scripts/add-sighting.js 9:37am 2:09pm\n'
+      + '   eg: node scripts/add-sighting.js --account jdoe 9:37am');
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(`--date must be YYYY-MM-DD, got "${date}"`);
+  if (accountIdx !== -1 && !accountArg) fail('--account needs a value: an accounts.id or a call sign.');
 
   const parsed = times.map((t) => {
     const minutes = parseTime(t);
@@ -138,7 +172,22 @@ async function main() {
   });
 
   console.log(`timezone ${TIMEZONE}, date ${date}${dryRun ? '  (dry run — nothing will be written)' : ''}`);
-  const accountId = dryRun ? null : await getOrCreateSystemAccountId(db, ACCOUNT);
+  // A dry run touches nothing, not even to read (see addAt) — so with
+  // --account given it reports the value as passed rather than resolving and
+  // validating it against the database.
+  let accountId = null;
+  let accountLabel = accountArg ? `${accountArg} (unresolved — dry run)` : `${ACCOUNT} (system account)`;
+  if (!dryRun) {
+    if (accountArg) {
+      const account = await resolveAccountId(accountArg);
+      accountId = account.id;
+      accountLabel = `${account.name} (account ${account.id})`;
+    } else {
+      accountId = await getOrCreateSystemAccountId(db, ACCOUNT);
+      accountLabel = `${ACCOUNT} (system account)`;
+    }
+  }
+  console.log(`attributing to ${accountLabel}`);
 
   for (const p of parsed) {
     const shown = `${String(Math.floor(p.minutes / 60)).padStart(2, '0')}:`
