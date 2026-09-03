@@ -1290,7 +1290,7 @@ const Tracker = (() => {
     "Right window, right roam. We are basically meteorologists now.",
     "The pattern held. Deeply satisfying, faintly alarming.",
     "Nailed it — that is exactly when it said.",
-    "Textbook. The model saw it coming.",
+    "Gank called before it landed — the model saw the roam coming.",
   ];
 
   // Told to the person who JUST logged a sighting, when it landed outside
@@ -1306,6 +1306,17 @@ const Tracker = (() => {
     "Noted, thanks. The model predicted wrong; you predicted nothing and still won.",
     "Logged straight. The algorithm's guess just wasn't it.",
     "Got it. Wrong minute, wrong model — right sighting.",
+  ];
+
+  // A near miss on the same logged action — the gank happened, just not on the
+  // exact minute called, and close enough (within LOGGED_CLOSE_MAX_GAP_MIN) that
+  // "wrong" undersells it. Each line is a template over the actual gap in
+  // minutes rather than one more static line, so "so close" says how close.
+  const LOGGED_CLOSE_MAX_GAP_MIN = 3;
+  const LOGGED_CLOSE_LINES = [
+    (gap) => `So close — the gank landed just ${gap} minute${gap === 1 ? '' : 's'} off the call.`,
+    (gap) => `Almost! Missed the predicted roam by ${gap} minute${gap === 1 ? '' : 's'}.`,
+    (gap) => `Painfully close — ${gap} minute${gap === 1 ? '' : 's'} from a perfect call.`,
   ];
 
   const pick = (lines) => lines[Math.floor(Math.random() * lines.length)];
@@ -1453,10 +1464,26 @@ const Tracker = (() => {
   // closes: the person who just logged it gets told right away, not five
   // minutes later when the hour happens to end. Wildcards count too — a
   // sighting landing in the gap between phases is still a real hit.
+  //
+  // A miss also measures its DISTANCE to the nearest predicted window — early
+  // if logged before windowFrom, late if at/after windowTo — and a miss inside
+  // LOGGED_CLOSE_MAX_GAP_MIN gets its own "so close" line naming that gap
+  // instead of the generic wrong-call one. A prediction off by one minute and
+  // one off by an hour are not the same result.
   function loggedOutcome(windows, minute) {
-    const hit = allMoments(windows).some((x) => x.moment.windowFrom != null
-      && minute >= x.moment.windowFrom && minute < x.moment.windowTo);
-    return { hit, line: pick(hit ? HIT_PREDICTION_LINES : LOGGED_WRONG_LINES) };
+    const moments = allMoments(windows).map((x) => x.moment).filter((m) => m.windowFrom != null);
+    const hit = moments.some((m) => minute >= m.windowFrom && minute < m.windowTo);
+    if (hit) return { hit: true, line: pick(HIT_PREDICTION_LINES) };
+
+    let nearestGap = null;
+    for (const m of moments) {
+      const gap = minute < m.windowFrom ? m.windowFrom - minute : minute - m.windowTo + 1;
+      if (nearestGap === null || gap < nearestGap) nearestGap = gap;
+    }
+    const line = nearestGap != null && nearestGap <= LOGGED_CLOSE_MAX_GAP_MIN
+      ? pick(LOGGED_CLOSE_LINES)(nearestGap)
+      : pick(LOGGED_WRONG_LINES);
+    return { hit: false, line };
   }
 
   // setInterval wrapper paused via the Page Visibility API. Idempotent start.
