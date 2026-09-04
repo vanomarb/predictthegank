@@ -20,7 +20,11 @@ const {
 const TIERS = ['sure', 'likely', 'maybe', 'long-shot'];
 
 const router = express.Router();
-const DEDUP_WINDOW_SECONDS = 2 * 60;
+// Two logs merge into one sighting only if they land strictly under a minute
+// apart (so at most 59s): the check is ABS(ts - now) < this, which is a window
+// either side of the new log, not a span. Anything wider and two genuinely
+// separate roams a couple of minutes apart collapse into a single sighting.
+const DEDUP_WINDOW_SECONDS = 60;
 const SIGHTING_LOCK_KEY = 8817231; // arbitrary fixed advisory-lock key for the sightings resource
 const OFFICE_HOURS = { start: 9, end: 18 }; // 9:00am-6:00pm
 const HISTORY_DAYS = 5; // how many past work days the field-log timeline shows

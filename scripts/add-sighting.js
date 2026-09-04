@@ -34,10 +34,11 @@ const { getOrCreateSystemAccountId } = require('../services/system-accounts');
 
 const TIMEZONE = process.env.TIMEZONE || 'UTC';
 const ACCOUNT = 'Seeded';
-// The same window the API uses to merge near-simultaneous logs. Seeding inside
-// it would attach to an existing sighting instead of making a new one, which is
-// almost never what someone running this wants, so it is called out instead.
-const DEDUP_WINDOW_SECONDS = 2 * 60;
+// The same window the API uses to merge near-simultaneous logs: strictly under
+// a minute either side, so at most 59s apart. Seeding inside it would attach to
+// an existing sighting instead of making a new one, which is almost never what
+// someone running this wants, so it is called out instead.
+const DEDUP_WINDOW_SECONDS = 60;
 
 function fail(msg) {
   console.error(msg);
@@ -195,7 +196,7 @@ async function main() {
     const res = await addAt(p.ts, accountId, dryRun);
     if (res.skipped) {
       console.log(`  ${p.input.padEnd(8)} -> ${shown}  already have a sighting within `
-        + `${DEDUP_WINDOW_SECONDS / 60} min (id ${res.existingId}) — skipped`);
+        + `${DEDUP_WINDOW_SECONDS}s (id ${res.existingId}) — skipped`);
     } else if (dryRun) {
       console.log(`  ${p.input.padEnd(8)} -> ${shown}  would insert at ts ${p.ts}`);
     } else {
