@@ -102,6 +102,18 @@ function recentWorkDays(n, workDays) {
   return dates;
 }
 
+// The Monday (YYYY-MM-DD) of the week containing dateStr (also YYYY-MM-DD).
+// Parsed/computed at UTC noon-adjacent midnight so the host machine's own
+// timezone can't shift which calendar day "today" lands on before the
+// weekday math runs — dateStr already came out of the office's TIMEZONE via
+// dateMinutesInTZ, this just needs to not re-interpret it through another one.
+function mondayOf(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  const day = d.getUTCDay(); // 0 = Sunday
+  d.setUTCDate(d.getUTCDate() - (day === 0 ? 6 : day - 1));
+  return d.toISOString().slice(0, 10);
+}
+
 // Shared by GET /stats and the post-log Gemini trigger below.
 async function buildHeatmapAndPrediction() {
   const rows = await db.many(`
@@ -112,14 +124,30 @@ async function buildHeatmapAndPrediction() {
     GROUP BY s.id
   `);
 
+  // Just today's, on the office clock. The page marks each predicted moment
+  // hit or missed against these; the pattern is built from every day, but
+  // whether a prediction landed is a question about the day you are looking at.
+  const today = dateMinutesInTZ(Math.floor(Date.now() / 1000)).date;
+  const weekStart = mondayOf(today);
+
   const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0));
   const byPerson = {};
+  // Leaderboards: same per-person tally as byPerson, just scoped to a
+  // narrower window — each name's count today, and this week (Monday to
+  // now, office clock). All-time is byPerson itself, no separate field.
+  const leaderboardToday = {};
+  const leaderboardWeek = {};
   const sightingTimestamps = [];
   rows.forEach((r) => {
     const { day, hour } = dayHourInTZ(r.ts);
     heatmap[day][hour]++;
     sightingTimestamps.push(r.ts);
-    r.logged_by.split(', ').forEach((n) => { byPerson[n] = (byPerson[n] || 0) + 1; });
+    const rowDate = dateMinutesInTZ(r.ts).date;
+    r.logged_by.split(', ').forEach((n) => {
+      byPerson[n] = (byPerson[n] || 0) + 1;
+      if (rowDate === today) leaderboardToday[n] = (leaderboardToday[n] || 0) + 1;
+      if (rowDate >= weekStart) leaderboardWeek[n] = (leaderboardWeek[n] || 0) + 1;
+    });
   });
   sightingTimestamps.sort((a, b) => b - a);
 
@@ -127,11 +155,6 @@ async function buildHeatmapAndPrediction() {
   // predicted time is a median over. Kept alongside the raw timestamps because
   // the smart windows are enriched with it too, in GET /stats.
   const minutesOfDay = sightingTimestamps.map((ts) => dateMinutesInTZ(ts).minutes);
-
-  // Just today's, on the office clock. The page marks each predicted moment
-  // hit or missed against these; the pattern is built from every day, but
-  // whether a prediction landed is a question about the day you are looking at.
-  const today = dateMinutesInTZ(Math.floor(Date.now() / 1000)).date;
   const todayMinutes = sightingTimestamps
     .map((ts) => dateMinutesInTZ(ts))
     .filter((d) => d.date === today)
@@ -172,7 +195,7 @@ async function buildHeatmapAndPrediction() {
     .reverse(); // oldest first — a timeline reads left to right
 
   return {
-    total: rows.length, heatmap, byPerson, sightingTimestamps,
+    total: rows.length, heatmap, byPerson, leaderboardToday, leaderboardWeek, sightingTimestamps,
     minutesOfDay, todayMinutes, medianGap, windows, history,
   };
 }
@@ -912,7 +935,8 @@ async function readPhaseHistoryFor(dates) {
 router.get('/stats', optionalAuth, async (req, res, next) => {
   try {
     const {
-      total, heatmap, byPerson, minutesOfDay, todayMinutes, medianGap, windows, history,
+      total, heatmap, byPerson, leaderboardToday, leaderboardWeek,
+      minutesOfDay, todayMinutes, medianGap, windows, history,
     } = await buildHeatmapAndPrediction();
     const stored = await readStoredSmartPrediction();
     const smartWindows = buildSmartWindows({ stored, minutesOfDay, total });
@@ -920,7 +944,11 @@ router.get('/stats', optionalAuth, async (req, res, next) => {
     const payload = {
       total, heatmap, windows, smartWindows, todayMinutes, history,
     };
-    if (req.user) payload.byPerson = byPerson;
+    if (req.user) {
+      payload.byPerson = byPerson;
+      payload.leaderboardToday = leaderboardToday;
+      payload.leaderboardWeek = leaderboardWeek;
+    }
     res.json(payload);
   } catch (e) {
     next(e);

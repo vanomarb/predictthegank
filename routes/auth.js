@@ -29,28 +29,32 @@ async function needsBootstrap() {
 // already exists logs back into that same account; a new one creates it.
 // This is a small trusted-team tool — the simplicity is the point, and
 // whoever knows a teammate's nickname can act as them (accepted tradeoff).
-router.post('/enter', async (req, res) => {
-  const { name } = req.body || {};
-  if (!isValidNickname(name)) {
-    return res.status(400).json({ error: 'Nickname must be 1-8 characters: letters, numbers, - or _.' });
-  }
+router.post('/enter', async (req, res, next) => {
+  try {
+    const { name } = req.body || {};
+    if (!isValidNickname(name)) {
+      return res.status(400).json({ error: 'Nickname must be 1-8 characters: letters, numbers, - or _.' });
+    }
 
-  let account = await db.one('SELECT * FROM accounts WHERE lower(name) = lower($1)', [name]);
-  if (account && account.is_system) {
-    return res.status(400).json({ error: 'That name is reserved.' });
-  }
+    let account = await db.one('SELECT * FROM accounts WHERE lower(name) = lower($1)', [name]);
+    if (account && account.is_system) {
+      return res.status(400).json({ error: 'That name is reserved.' });
+    }
 
-  if (!account) {
-    const isAdmin = await needsBootstrap();
-    account = await db.one(
-      'INSERT INTO accounts (name, is_admin) VALUES ($1, $2) RETURNING *',
-      [name, isAdmin]
-    );
-  }
+    if (!account) {
+      const isAdmin = await needsBootstrap();
+      account = await db.one(
+        'INSERT INTO accounts (name, is_admin) VALUES ($1, $2) RETURNING *',
+        [name, isAdmin]
+      );
+    }
 
-  const token = signToken(account);
-  res.cookie('session', token, COOKIE_OPTS);
-  res.json({ id: account.id, name: account.name, isAdmin: !!account.is_admin });
+    const token = signToken(account);
+    res.cookie('session', token, COOKIE_OPTS);
+    res.json({ id: account.id, name: account.name, isAdmin: !!account.is_admin });
+  } catch (e) {
+    next(e);
+  }
 });
 
 router.post('/logout', (req, res) => {

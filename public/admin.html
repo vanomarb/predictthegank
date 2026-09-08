@@ -71,16 +71,14 @@
   <main class="mx-auto w-full max-w-[760px] px-5 pt-7 pb-16">
     <div class="mt-[22px] mb-1.5 flex gap-2.5">
       <!-- data-closed is set by admin.js outside work hours -->
+      <!-- Logging a sighting fires the "alert everyone" broadcast in the same
+           click (see admin.js) — the two used to be separate buttons. -->
       <button id="logBtn" type="button"
               class="relative flex flex-1 cursor-pointer items-center justify-center gap-[0.45em] overflow-hidden rounded-md border border-amber-500 bg-amber-500 p-5 text-[18px] font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-amber-500 disabled:hover:bg-amber-500 disabled:active:scale-100 data-closed:border-dashed data-closed:border-line data-closed:bg-ink-800 data-closed:text-fg-faint data-closed:opacity-100 data-closed:hover:border-line data-closed:hover:bg-ink-800">
-        <span id="logBtnIcon" data-icon="eye"></span><span id="logBtnLabel">Log sighting</span>
+        <span id="logBtnIcon" data-icon="eye"></span><span id="logBtnLabel">Log & alert</span>
       </button>
       <button id="undoBtn" type="button"
               class="cursor-pointer rounded-md border border-line bg-transparent px-[18px] py-3 text-sm font-semibold text-fg-muted transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">Undo mine</button>
-      <button id="alertBtn" type="button"
-              class="cursor-pointer rounded-md border border-bad bg-transparent px-[18px] py-3 text-sm font-semibold text-bad transition-[transform,border-color,background-color] duration-150 hover:bg-ink-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50">
-        <span id="alertBtnIcon" data-icon="bell"></span><span>Alert everyone</span>
-      </button>
     </div>
 
     <p id="logHint" class="mt-[-6px] mb-[18px] text-xs tabular-nums text-fg-faint"></p>
@@ -168,7 +166,16 @@
 
     <section id="panel-team" class="hidden data-active:block">
       <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
-        <div id="byPerson" class="flex flex-wrap items-center gap-2"></div>
+        <p class="mb-3.5 text-xs uppercase tracking-[0.12em] text-fg-faint">Leaderboard — most logged</p>
+        <div id="leaderboardTabs" class="mb-4 flex gap-1 rounded-md border border-line bg-ink-950 p-[3px]">
+          <button data-period="today" type="button" data-active
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Today</button>
+          <button data-period="week" type="button"
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">This week</button>
+          <button data-period="allTime" type="button"
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">All-time</button>
+        </div>
+        <div id="leaderboardList" class="grid gap-1.5"></div>
       </div>
     </section>
 

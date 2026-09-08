@@ -32,8 +32,6 @@
   const ROW_DELETE = 'log-row-delete inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full '
     + 'border border-transparent text-fg-faint transition-colors duration-150 hover:border-bad hover:text-bad '
     + 'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400';
-  const PILL = 'inline-flex items-center gap-[7px] rounded-full border border-line bg-ink-800 py-[7px] pr-3 pl-2 text-[13px]';
-  const PILL_COUNT = 'tabular-nums text-amber-300';
   const EMPTY = 'p-4 text-[13px] text-fg-muted';
   // The admin console's phase cards are the compact variant of the public
   // tracker's — same idea: the range is the card, the tiers are rows inside it.
@@ -170,7 +168,12 @@
     switchToAuth();
   });
 
-  // ---- log / undo ----
+  // ---- log (+ alert) / undo ----
+  // Logging a sighting and alerting everyone are the same real-world moment —
+  // "I see them" — so one press does both, every time. The alert is fired
+  // alongside the log rather than blocking on it; if it fails, the log still
+  // goes through and the toast just says so, since the log is the record of
+  // truth and the alert is a courtesy on top of it.
   el('logBtn').addEventListener('click', async (e) => {
     if (logging) return;
     // Belt and braces, as on the public page: the button is disabled out of
@@ -193,16 +196,20 @@
     logging = true;
     btn.disabled = true;
     try {
-      const data = await Tracker.api('/sightings', { method: 'POST' });
+      const [data, alerted] = await Promise.all([
+        Tracker.api('/sightings', { method: 'POST' }),
+        Tracker.api('/alerts', { method: 'POST' }).then(() => true).catch(() => false),
+      ]);
+      const alertNote = alerted ? ' Alert sent.' : ' (alert failed to send)';
       if (data.alreadyLogged) {
-        showToast('You already logged this one.');
+        showToast('You already logged this one.' + alertNote);
       } else {
         // Immediate verdict on THIS log, same rule as the badges — not the
         // phase-close sweep's recap of the whole hour, but "did what I just
         // did land on a predicted minute," told right away. No modal here —
         // the console gets toasts and notifications, see the note above.
         const { hit, line } = Tracker.loggedOutcome(phases, Tracker.nowMinutes(timeZone));
-        showToast(data.merged ? `Merged with a sighting logged moments ago — ${line}` : line);
+        showToast((data.merged ? `Merged with a sighting logged moments ago — ${line}` : line) + alertNote);
         Tracker.notify(hit ? 'Called it — HR showed up' : 'Wrong prediction', line, 'outcome');
       }
       await refresh();
@@ -220,20 +227,6 @@
       showToast('Undone.');
       await refresh();
     } catch (err) { showToast(err.message); }
-  });
-
-  // ---- alert everyone ----
-  el('alertBtn').addEventListener('click', async () => {
-    const btn = el('alertBtn');
-    btn.disabled = true;
-    try {
-      await Tracker.api('/alerts', { method: 'POST' });
-      showToast('Alert sent.');
-    } catch (err) {
-      showToast(err.message);
-    } finally {
-      btn.disabled = false;
-    }
   });
 
   // Polled independently of refresh()/stats — a slow or erroring alerts fetch
@@ -429,7 +422,7 @@
       Icons.set(el('logBtnIcon'), open ? 'eye' : 'lock-simple');
       if (!open) el('logHint').innerHTML = Icons.svg('clock-countdown') + ' ' + label;
     }
-    el('logBtnLabel').textContent = open ? 'Log sighting' : 'Logging closed';
+    el('logBtnLabel').textContent = open ? 'Log & alert' : 'Logging closed';
   }
 
   // A fact about the page, not about one window — see public.js.
@@ -585,18 +578,18 @@
     });
   }
 
-  function renderByPerson(byPerson) {
-    const wrap = el('byPerson');
-    const names = Object.keys(byPerson || {});
-    if (names.length === 0) {
-      wrap.innerHTML = `<span class="text-[13px] text-fg-muted">No entries yet.</span>`;
-      return;
-    }
-    wrap.innerHTML = names
-      .sort((a, b) => byPerson[b] - byPerson[a])
-      .map((n) => `<span class="${PILL}">${n} <span class="${PILL_COUNT}">${byPerson[n]}</span></span>`)
-      .join('');
+  // Which period's leaderboard is showing, and the latest data for each —
+  // refresh() updates the data every poll, but only re-renders the one the
+  // reader is actually looking at.
+  let leaderboardPeriod = 'today';
+  let leaderboards = { today: {}, week: {}, allTime: {} };
+  function renderLeaderboardPanel() {
+    Tracker.renderLeaderboard(el('leaderboardList'), leaderboards[leaderboardPeriod]);
   }
+  Tracker.initPeriodTabs(el('leaderboardTabs'), (period) => {
+    leaderboardPeriod = period;
+    renderLeaderboardPanel();
+  });
 
   async function refresh() {
     const [{ sightings }, stats] = await Promise.all([
@@ -611,7 +604,8 @@
     checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
       { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
     Tracker.renderDayTimeline(el('dayTimeline'), dayHistory, selectedDate, onDaySelect);
-    renderByPerson(stats.byPerson);
+    leaderboards = { today: stats.leaderboardToday, week: stats.leaderboardWeek, allTime: stats.byPerson };
+    renderLeaderboardPanel();
     el('totalStat').textContent = stats.total;
     el('peakStat').textContent = Tracker.peakLabel(stats);
   }

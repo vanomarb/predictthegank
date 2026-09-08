@@ -43,11 +43,12 @@
     nicknameError.style.display = 'none';
   }
 
-  // Whether to ASK is a synchronous localStorage check (no network wait, so
-  // the button can render instantly) — but it's only a cache. The real
-  // identity is still the session cookie: if it's gone (expired/cleared)
-  // despite the flag, the first authenticated request below 401s and
-  // reopenNicknamePrompt() below undoes the flag and asks again.
+  // The synchronous localStorage flag is only an optimistic fast path (lets
+  // a repeat visitor's button render enabled instantly instead of flashing
+  // disabled while the network call resolves). The real identity is always
+  // the session cookie, checked via /auth/me below — this is what lets a
+  // user who already signed in on `/` be recognized here without being
+  // re-prompted for a nickname.
   const hasNickname = (() => {
     try { return localStorage.getItem(HAS_NICKNAME_KEY) === '1'; } catch (e) { return false; }
   })();
@@ -64,12 +65,18 @@
 
   if (hasNickname) {
     alertBtn.disabled = false;
-    // Fills in currentUser for the alert poller's self-exclusion check.
-    // Optimistic: the button is already usable while this resolves.
-    Tracker.api('/auth/me').then((data) => { currentUser = data; }).catch(() => reopenNicknamePrompt());
-  } else {
-    showNicknameModal();
   }
+  Tracker.api('/auth/me')
+    .then((data) => {
+      currentUser = data;
+      setHasNickname(true);
+      if (modal.style.display === 'flex') hideNicknameModal();
+      else alertBtn.disabled = false;
+    })
+    .catch(() => {
+      if (hasNickname) reopenNicknamePrompt();
+      else showNicknameModal();
+    });
 
   nicknameForm.addEventListener('submit', async (e) => {
     e.preventDefault();

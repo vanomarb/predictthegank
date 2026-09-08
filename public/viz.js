@@ -1563,6 +1563,42 @@ const Tracker = (() => {
     });
   }
 
+  // Who has logged the most sightings — the admin Team tab and the public
+  // page's leaderboard section both render the same {name: count} shape this
+  // way, for whichever period (today / this week / all-time) is selected.
+  // The top 3 get a medal badge; everyone else gets a plain numbered one.
+  const MEDALS = ['bg-amber-400 text-amber-ink', 'bg-[#c7ccd6] text-[#2b2f38]', 'bg-[#d59a6a] text-[#2b1a0e]'];
+  function renderLeaderboard(container, byPerson) {
+    if (!container) return;
+    const entries = Object.entries(byPerson || {}).sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) {
+      container.innerHTML = '<p class="p-4 text-[13px] text-fg-muted">No entries yet.</p>';
+      return;
+    }
+    container.innerHTML = entries.map(([name, count], i) => `
+      <div class="flex items-center gap-2.5 rounded-md border border-line bg-ink-900 px-3 py-2">
+        <span class="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold tabular-nums ${MEDALS[i] || 'border border-line-strong bg-ink-800 text-fg-muted'}">${i + 1}</span>
+        <span class="min-w-0 flex-1 truncate text-[13px] text-fg">${name}</span>
+        <span class="shrink-0 tabular-nums text-[13px] text-amber-300">${count}</span>
+      </div>`).join('');
+  }
+
+  // Wires a period-tab row (data-period buttons sharing one container) to
+  // call onChange(period) and toggle data-active — same attribute-driven
+  // pattern as the app's main tab nav, just scoped to one small control.
+  function initPeriodTabs(container, onChange) {
+    if (!container) return;
+    const buttons = [...container.querySelectorAll('[data-period]')];
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        buttons.forEach((b) => {
+          if (b === btn) b.dataset.active = ''; else delete b.dataset.active;
+        });
+        onChange(btn.dataset.period);
+      });
+    });
+  }
+
   return {
     DAYS, DAYS_FULL, api, hourLabel, heatColor, attachTooltip, renderHeatmap,
     renderDayTimeline,
@@ -1577,7 +1613,7 @@ const Tracker = (() => {
     createPredictionWatcher, loggedOutcome,
     workHoursState, currentDayInTZ, dayTally,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
-    playAlarmSound, initSoundPicker,
+    playAlarmSound, initSoundPicker, renderLeaderboard, initPeriodTabs,
     initNotifyToggle, createCountdownAlerter, ALERT_THRESHOLDS_S,
     createCountdownOverride,
   };
