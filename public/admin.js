@@ -98,6 +98,7 @@
     if (permission === 'denied') showToast('Your browser is blocking notifications for this site.');
     else showToast(on ? 'Roam alerts on — heads-up at 1 min and 30 s.' : 'Roam alerts off.');
   });
+  Tracker.initSoundPicker(el('soundPicker'), () => showToast('Alarm sound updated.'));
 
   // One pair of alerts per predicted moment — see the note in public.js.
   const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, entry) => {
@@ -275,6 +276,7 @@
       if (!currentUser || a.firedBy !== currentUser.id) {
         Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
         showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+        Tracker.playAlarmSound();
       }
     });
     setLastAlertId(Math.max(...alerts.map((a) => a.id)));

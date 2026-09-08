@@ -72,7 +72,7 @@ router.post('/register', async (req, res) => {
   const account = { id: inserted.id, name: cleanName, is_admin: isAdmin };
   const token = signToken(account);
   res.cookie('session', token, COOKIE_OPTS);
-  res.json({ name: account.name, isAdmin: !!isAdmin });
+  res.json({ id: account.id, name: account.name, isAdmin: !!isAdmin });
 });
 
 router.post('/login', async (req, res) => {
@@ -89,7 +89,7 @@ router.post('/login', async (req, res) => {
 
   const token = signToken(account);
   res.cookie('session', token, COOKIE_OPTS);
-  res.json({ name: account.name, isAdmin: !!account.is_admin });
+  res.json({ id: account.id, name: account.name, isAdmin: !!account.is_admin });
 });
 
 router.post('/logout', (req, res) => {
@@ -98,7 +98,7 @@ router.post('/logout', (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ name: req.user.name, isAdmin: req.user.isAdmin });
+  res.json({ id: req.user.id, name: req.user.name, isAdmin: req.user.isAdmin });
 });
 
 // Admin: generate a new single-use invite code.

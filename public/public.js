@@ -233,6 +233,7 @@
     if (permission === 'denied') showToast('Your browser is blocking notifications for this site.');
     else showToast(on ? 'Roam alerts on — you will get a heads-up at 1 min and 30s.' : 'Roam alerts off.');
   });
+  Tracker.initSoundPicker(document.getElementById('soundPicker'), () => showToast('Alarm sound updated.'));
 
   // Fires for EVERY predicted moment, each with its own pair of alerts — see
   // createCountdownAlerter. The copy names which prediction is coming and how
@@ -707,6 +708,7 @@
       if (!currentUser || a.firedBy !== currentUser.id) {
         Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
         showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+        Tracker.playAlarmSound();
       }
     });
     setLastAlertId(Math.max(...alerts.map((a) => a.id)));
