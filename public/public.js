@@ -19,6 +19,7 @@
   const tooltip = Tracker.attachTooltip(document.getElementById('tooltip'));
   const spotBtn = document.getElementById('spotBtn');
   const signInLabel = document.getElementById('signInLabel');
+  const alertBtn = document.getElementById('alertBtn');
 
   Tracker.initThemeToggle(document.getElementById('themeToggle'));
 
@@ -34,11 +35,11 @@
       currentUser = null; // not signed in — the ordinary, anonymous visitor
     }
     if (signInLabel) signInLabel.textContent = currentUser ? `${currentUser.name} · console` : 'sign in';
+    if (alertBtn) alertBtn.style.display = currentUser ? '' : 'none';
   })();
 
   // Highest alert id already surfaced on this device — see the matching note
-  // in admin.js. No fire button here (that's console-only); this page only
-  // needs to detect and notify.
+  // in admin.js.
   let lastAlertId = 0;
   try { lastAlertId = Number.parseInt(localStorage.getItem('lastAlertId'), 10) || 0; } catch (e) { /* private mode */ }
   function setLastAlertId(id) {
@@ -765,4 +766,20 @@
       syncSpotButton();
     }
   });
+
+  // Signed-in visitors only (see the currentUser check above) — same handler
+  // shape as admin.js's alertBtn.
+  if (alertBtn) {
+    alertBtn.addEventListener('click', async () => {
+      alertBtn.disabled = true;
+      try {
+        await Tracker.api('/alerts', { method: 'POST' });
+        showToast('Alert sent.');
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        alertBtn.disabled = false;
+      }
+    });
+  }
 })();

@@ -39,7 +39,7 @@
       <div class="mb-3.5 flex flex-col gap-1.5">
         <label for="nicknameInput" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Nickname</label>
         <input id="nicknameInput" name="name" placeholder="8 chars max" autocomplete="username"
-               maxlength="8" pattern="[A-Za-z0-9_-]{1,8}"
+               maxlength="8" pattern="[-A-Za-z0-9_]{1,8}"
                class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
       <button id="enterBtn" type="submit"
