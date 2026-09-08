@@ -13,6 +13,7 @@
   const phasesNote = document.getElementById('phasesNote');
   const breakNote = document.getElementById('breakNote');
   const spotHint = document.getElementById('spotHint');
+  const dayTimeline = document.getElementById('dayTimeline');
   const heatmapGrid = document.getElementById('heatmapGrid');
   const totalStat = document.getElementById('totalStat');
   const peakStat = document.getElementById('peakStat');
@@ -58,6 +59,54 @@
   // reading session, not a preference.
   const openState = new Map();
   let timer3d = null;
+
+  // ---- day filter (Recent work days row) ----
+  // Picking a day swaps the phase cards for THAT day's own frozen phases (see
+  // phase_history / snapshotTodayPhases in routes/sightings.js) — its own
+  // predicted times, judged against what it actually saw — rather than
+  // re-coloring today's live cards. The pattern moves as new sightings come
+  // in, so a past day's own predictions can genuinely differ from today's;
+  // showing today's times under a different day's verdict would just be
+  // wrong. The live countdown/hero above is untouched either way — it is
+  // always about today. null means "live": follow today, the default.
+  let selectedDate = null;
+  let dayHistory = []; // this poll's Recent work days entries — see /api/sightings/stats' `history`
+
+  // The day currently driving the phase cards, or null for "use today's live data".
+  function activeDay() {
+    if (!selectedDate) return null;
+    return dayHistory.find((d) => d.date === selectedDate) || null;
+  }
+  function activeMinutes() {
+    const day = activeDay();
+    return day ? day.minutes : todayMinutes;
+  }
+  // A picked PAST day is fully over, so every window in it should read as
+  // closed; today (picked or live) is judged as far as the clock has actually
+  // gotten, same as always.
+  function activeNowMin() {
+    const day = activeDay();
+    return day && !day.today ? 1440 : Tracker.nowMinutes(timeZone);
+  }
+  // Whichever windows the phase cards should show right now: the selected
+  // day's own frozen phases, or live `phases` if nothing is selected — or if
+  // the selection has no snapshot yet (today, still in progress, or a deploy
+  // from before phase_history existed), same as this filter behaved before
+  // the history table. Re-evaluated on every render (poll or click) so a
+  // frozen selection survives the 5s poll instead of being overwritten by it.
+  function activeCardsWindows() {
+    const day = activeDay();
+    return day && Array.isArray(day.windows)
+      ? Tracker.classifyFinishedDay(Tracker.normalizeWindows({ windows: day.windows, smartWindows: day.smartWindows }))
+      : phases;
+  }
+  function onDaySelect(date) {
+    // Clicking the already-selected day is how you let go of it and return to
+    // today's live cards — there is no separate "today" button to click back to.
+    selectedDate = selectedDate === date ? null : date;
+    renderPhaseCards(activeCardsWindows());
+    Tracker.renderDayTimeline(dayTimeline, dayHistory, selectedDate, onDaySelect);
+  }
 
   const OPEN_HINT = spotHint.textContent;
 
@@ -161,6 +210,9 @@
     });
   }
 
+  // pagePath is optional: the page-wide layer (confetti / dud) is the two
+  // outcomes the whole page is watching FOR — wrongModal below is neither, so
+  // it skips that layer and only plays its own modal-local animation.
   function makeOutcomeModal({ id, textId, artId, lottiePath, pagePath, closeIds }) {
     const modal = document.getElementById(id);
     let anim = null;
@@ -173,7 +225,7 @@
       modal.style.display = 'flex';
       if (anim) anim.destroy();
       anim = playModalLottie(artId, lottiePath);
-      playPageLottie(pagePath);
+      if (pagePath) playPageLottie(pagePath);
     }
     closeIds.forEach((cid) => document.getElementById(cid).addEventListener('click', hide));
     modal.addEventListener('click', (e) => { if (e.target === modal) hide(); });
@@ -190,10 +242,21 @@
     lottiePath: '/hit-target.lottie.json', pagePath: '/confetti-page.lottie.json',
     closeIds: ['hitModalClose', 'hitModalOk'],
   });
+  // Shown right after logging a sighting that lands outside every predicted
+  // minute — a different moment from missModal (a whole window closing
+  // unwatched). The person did the right thing by logging it, so this reads
+  // as "noted, the prediction was wrong" rather than "you missed" — no
+  // page-wide dud layer, since nothing here is a failure worth deflating.
+  const wrongModal = makeOutcomeModal({
+    id: 'wrongModal', textId: 'wrongModalText', artId: 'wrongModalArt',
+    lottiePath: '/write-note.lottie.json',
+    closeIds: ['wrongModalClose', 'wrongModalOk'],
+  });
 
   // Judged exactly as the per-moment badges are: a sighting has to land in a
   // predicted minute. The modal and the badges under it cannot disagree.
   const checkPrediction = Tracker.createPredictionWatcher({
+    storageKey: 'public',
     onHit: (line, hits, moments) => {
       hitModal.show(line);
       Tracker.notify('Called it — HR showed up', line, 'outcome');
@@ -210,17 +273,18 @@
   // Every load, no memory of the last one — see initAdvisory in viz.js.
   const advisory = Tracker.initAdvisory();
 
-  // ---- ?preview=hit|miss|toast ----
+  // ---- ?preview=hit|miss|wrong|toast ----
   // Shows an outcome on demand so the presentation — lottie, copy, layout — can
   // be checked without waiting for a real window to open and close. It only
   // reads the URL and calls the same show() the watcher does; nothing in the
   // prediction path is faked or bypassed, which is why this is a URL flag and
   // not another server setting.
-  const previewMatch = /[?&]preview=(hit|miss|toast)\b/.exec((window.location && window.location.search) || '');
+  const previewMatch = /[?&]preview=(hit|miss|wrong|toast)\b/.exec((window.location && window.location.search) || '');
   if (previewMatch) {
     const which = previewMatch[1];
     if (which === 'hit') hitModal.show('Preview — this is what a hit looks like.');
     else if (which === 'miss') missModal.show('Preview — this is what a miss looks like.');
+    else if (which === 'wrong') wrongModal.show('Preview — this is what logging a wrong-minute sighting looks like.');
     else showToast('Preview — a countdown toast, fully ablaze.', { fire: true });
   } else if (advisory) {
     advisory.show();
@@ -361,13 +425,11 @@
     + 'group-data-featured:border-amber-500 group-data-featured:text-amber-300';
   const PHASE_RANGE = 'text-[15px] font-semibold tracking-[-0.01em] text-fg group-data-featured:text-amber-300 '
     + 'group-data-passed:line-through group-data-passed:decoration-fg-faint';
-  // What was actually LOGGED in this range, in the summary line, so a collapsed
-  // card answers "did it happen" without being opened.
-  //
-  // This slot used to repeat the phase's own sure prediction, which is the first
-  // row inside the card and told the reader nothing they could not already see.
-  // The outcome is the thing worth surfacing on a shut card.
-  const PHASE_LOGGED = 'text-[13px] tabular-nums text-good';
+  // What was actually LOGGED in this range: "nothing logged yet" / "no logs —
+  // missed" in the summary line so a collapsed card answers "did it happen"
+  // without being opened. Once something HAS been logged, loggedButton takes
+  // over instead (see below) — a count button, not text, so the header stays
+  // a fixed shape.
   const PHASE_NONE = 'text-[13px] text-fg-faint';
   const PHASE_META = 'ml-auto text-[11px] tabular-nums text-fg-faint';
   const PHASE_CARET = 'shrink-0 text-fg-faint transition-transform duration-200 group-open:rotate-180';
@@ -403,7 +465,7 @@
   const VERDICT_MISS = `${VERDICT} border-bad bg-[rgba(var(--status-bad-rgb),0.12)] text-bad`;
 
   function verdictBadge(row) {
-    const outcome = Tracker.momentOutcome(row, todayMinutes, Tracker.nowMinutes(timeZone), featured || {});
+    const outcome = Tracker.momentOutcome(row, activeMinutes(), activeNowMin(), featured || {});
     if (!outcome) return '';
     return outcome === 'hit'
       ? `<span class="${VERDICT_HIT}" title="A sighting was logged in the predicted minute">Hit</span>`
@@ -411,13 +473,17 @@
   }
 
   // What was actually logged in this range, under the predictions it is being
-  // measured against. Visually quieter and indented: these are facts, and the
-  // rows above them are claims.
-  const LOGGED_HEAD = 'flex items-center gap-2 border-t border-line bg-ink-950 px-4 py-1.5 '
-    + 'text-[9px] uppercase tracking-[0.1em] text-fg-faint';
-  const LOGGED_ROW = 'flex items-center gap-3 border-t border-line/60 bg-ink-950 px-4 py-2';
+  // measured against — shown in loggedModal, not inline. A comma-separated
+  // list of times used to sit right in the card's header row, which is the
+  // one place on the page that cannot afford variable-length content: it is
+  // already sharing the row with the range, the AI mark and the caret. A
+  // button that opens the same facts in a modal keeps the header a fixed
+  // shape regardless of how many sightings a phase racks up.
+  const LOGGED_ROW = 'flex items-center gap-3 rounded-xl border border-line-strong bg-ink-950 px-3.5 py-2.5';
   const LOGGED_TIME = 'w-[76px] shrink-0 text-[13px] font-semibold tabular-nums text-fg-muted data-matched:text-good';
   const LOGGED_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint';
+  const LOGGED_BTN = 'ml-auto shrink-0 cursor-pointer rounded-full border border-line-strong bg-ink-950 px-2.5 py-1 text-[11px] font-semibold tabular-nums text-fg-muted transition-colors duration-150 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400';
+  const LOGGED_BTN_HIT = 'ml-auto shrink-0 cursor-pointer rounded-full border border-good bg-[rgba(var(--status-good-rgb),0.12)] px-2.5 py-1 text-[11px] font-semibold tabular-nums text-good transition-colors duration-150 hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400';
 
   // The header's outcome line. Shown on a hit and on a miss alike, because "we
   // predicted 2:07 and nothing was logged" is exactly as much of a result as
@@ -435,41 +501,61 @@
       + ` aria-label="Predicted by AI, ${conf}">${Icons.svg('sparkle', { size: '0.95em' })}</span>`;
   }
 
-  function loggedSummary(w) {
+  // gapEndMin extends the range this phase claims past its own hourEnd, up to
+  // the next phase (or the end of the office day) — see the note on
+  // Tracker.loggedInPhase. Without it a sighting logged in the gap after the
+  // last phase of the morning, before anything is predicted again, belonged to
+  // no card at all.
+  function loggedForPhase(w, gapEndMin) {
+    if (!w.showingToday) return [];
+    return Tracker.loggedInPhase(w, activeMinutes(), gapEndMin);
+  }
+
+  // The header's logged count — a button, not a list, so the header stays one
+  // fixed shape no matter how many sightings a phase racks up. Opens
+  // loggedModal with the same rows loggedButton counted.
+  function loggedButton(w, gapEndMin) {
     // A card describing another day has nothing to report yet — not even
     // "nothing logged yet", which on tomorrow's card reads as a verdict on a day
     // that has not started.
     if (!w.showingToday) return '';
-    const rows = Tracker.loggedInPhase(w, todayMinutes);
+    const rows = loggedForPhase(w, gapEndMin);
     if (rows.length === 0) {
       // Only once the range has closed is "nothing" an outcome rather than a
       // window still waiting to be filled.
-      const closed = Tracker.nowMinutes(timeZone) >= w.hourEnd * 60 && w.todayIsWorkDay !== false;
+      const closed = activeNowMin() >= (gapEndMin != null ? gapEndMin : w.hourEnd * 60)
+        && w.todayIsWorkDay !== false;
       return `<span class="${PHASE_NONE}">${closed ? 'no logs — missed' : 'nothing logged yet'}</span>`;
     }
-    const shown = rows.slice(0, 3).map((r) => r.label).join(', ');
-    const more = rows.length > 3 ? ` +${rows.length - 3}` : '';
     const anyHit = rows.some((r) => r.matched);
-    return `<span class="${anyHit ? PHASE_LOGGED : PHASE_NONE}">${shown}${more}</span>`;
+    return `<button type="button" class="${anyHit ? LOGGED_BTN_HIT : LOGGED_BTN}" data-logged-btn`
+      + ` data-hour="${w.hourStart}">${rows.length} logged</button>`;
   }
 
-  function loggedRows(w) {
-    const rows = Tracker.loggedInPhase(w, todayMinutes);
-    if (rows.length === 0) return '';
-    return `
-      <div class="${LOGGED_HEAD}" data-logged="head">Logged in this window · ${rows.length}</div>
-      ${rows.map((r) => `
-        <div class="${LOGGED_ROW}" data-logged="row">
-          <span class="${LOGGED_TIME}" ${r.matched ? 'data-matched' : ''}>${r.label}</span>
-          <span class="${LOGGED_SUB}">${r.matched
-            ? `landed on the ${r.matched.label} prediction`
-            : 'nothing was predicted for this minute'}</span>
-          ${r.matched
-            ? `<span class="${VERDICT_HIT}">Hit</span>`
-            : `<span class="${VERDICT_MISS}">Missed</span>`}
-        </div>
-      `).join('')}`;
+  // ---- logged modal ----
+  const loggedModalEl = document.getElementById('loggedModal');
+  const loggedModalTitle = document.getElementById('loggedModalTitle');
+  const loggedModalSub = document.getElementById('loggedModalSub');
+  const loggedModalRows = document.getElementById('loggedModalRows');
+  function hideLoggedModal() { loggedModalEl.style.display = 'none'; }
+  function showLoggedModal(w, rows) {
+    loggedModalTitle.textContent = `Logged in ${w.timeLabel}`;
+    loggedModalSub.textContent = `${rows.length} sighting${rows.length === 1 ? '' : 's'} logged today`;
+    loggedModalRows.innerHTML = rows.map((r) => `
+      <div class="${LOGGED_ROW}">
+        <span class="${LOGGED_TIME}" ${r.matched ? 'data-matched' : ''}>${r.label}</span>
+        <span class="${LOGGED_SUB}">${r.matched
+          ? `landed on the ${r.matched.label} prediction`
+          : 'nothing was predicted for this minute'}</span>
+        ${r.matched
+          ? `<span class="${VERDICT_HIT}">Hit</span>`
+          : `<span class="${VERDICT_MISS}">Missed</span>`}
+      </div>
+    `).join('');
+    loggedModalEl.style.display = 'flex';
   }
+  document.getElementById('loggedModalClose').addEventListener('click', hideLoggedModal);
+  loggedModalEl.addEventListener('click', (e) => { if (e.target === loggedModalEl) hideLoggedModal(); });
 
   // The wildcard sits BETWEEN the cards, not inside one.
   //
@@ -483,16 +569,20 @@
   // 100px of column, and "projected from the usual 53-minute gap" came out as a
   // seven-line ribbon. Under 480px the note drops to its own full-width line
   // underneath instead, with the time and badge sharing the one above.
-  // Hidden while the phase above it is collapsed. The wildcard belongs to that
-  // phase — it is the chance of a roam on the way OUT of it — so a row of
-  // collapsed cards with dangling projections between them reads as three
-  // wildcards belonging to nothing.
+  // Hidden while the phase above it is collapsed AND its own countdown has
+  // moved on — a row of collapsed cards with dangling projections between
+  // them reads as three wildcards belonging to nothing. The one exception is
+  // `data-force`: once the countdown's target IS this wildcard (its phase's
+  // own moments are done, by time or by an early satisfy — see
+  // classifyWindows' wildcardFeatured), the phase card itself collapses and
+  // strikes through, but the wildcard it's still counting down to has to stay
+  // visible, or the countdown would be pointing at nothing on screen.
   //
   // The adjacent-sibling selector, not Tailwind's `peer`: peer variants use the
   // general sibling combinator, so every wildcard after the one open card would
   // match it and show. `details[open] + &` is true only for the card directly
   // above.
-  const WILD_LINK = 'mx-5 hidden [details[open]+&]:flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-dashed border-line py-1.5 pl-4';
+  const WILD_LINK = 'mx-5 hidden [details[open]+&]:flex data-force:flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-dashed border-line py-1.5 pl-4';
   const WILD_TIME = 'shrink-0 text-[15px] font-semibold tabular-nums text-fg-muted min-[481px]:w-[68px]';
   const WILD_SUB = 'min-w-0 flex-1 text-[11px] leading-snug text-fg-faint '
     + 'max-[480px]:order-last max-[480px]:w-full max-[480px]:flex-none';
@@ -603,6 +693,14 @@
         phasesNote.textContent = `${left} of ${windows.length} still to come`;
       }
     }
+    renderPhaseCards(activeCardsWindows());
+  }
+
+  // Just the cards: hourStart/tiers/badges, nothing about the hero above them.
+  // Split out of renderTiers so the "Recent work days" filter (onDaySelect)
+  // can swap these for a picked day's own frozen phases without touching the
+  // live countdown, which stays about today no matter what day is selected.
+  function renderPhaseCards(windows) {
     // Only the phase in play is expanded BY DEFAULT — but a card the reader has
     // opened stays open, and one they have shut stays shut.
     //
@@ -617,12 +715,17 @@
     // which collapses every card by default while still letting a reader open
     // one to read its verdicts.
     const isOpen = (w) => (openState.has(w.hourStart) ? openState.get(w.hourStart) : w.highlight);
+    // This phase's own hours, plus the gap after it up to whichever comes
+    // next — the next phase, or the end of the office day if it is the last
+    // one. See the note on Tracker.loggedInPhase.
+    const gapEndFor = (i) => (windows[i + 1] ? windows[i + 1].hourStart * 60
+      : ((workHours && workHours.end) || 18) * 60);
     tierChips.innerHTML = windows.map((w, i) => `
       <details class="${PHASE_CARD}" data-hour="${w.hourStart}" ${isOpen(w) ? 'open' : ''} ${w.highlight ? 'data-featured' : ''} ${w.struck ? 'data-passed' : ''}>
         <summary class="${PHASE_HEAD}">
           <span class="${PHASE_NUM}">${i + 1}</span>
           <span class="${PHASE_RANGE}">${w.timeLabel}</span>
-          ${loggedSummary(w)}
+          ${loggedButton(w, gapEndFor(i))}
           <span class="${PHASE_META}">${w.count ? `${w.count} all-time` : w.badge}</span>
           ${aiMark(w)}
           <span class="${PHASE_CARET}">${caret}</span>
@@ -635,16 +738,31 @@
             <span class="${TIER_BADGE}" title="${t.label}" ${w.highlight && t.tier === 'sure' ? 'data-next' : ''}>${pctLabel(t)}</span>
           </div>
         `).join('')}
-        ${loggedRows(w)}
       </details>
       ${wildcardOf(w) ? `
-        <div class="${WILD_LINK}" data-wildcard>
+        <div class="${WILD_LINK}" data-wildcard ${w.wildcardFeatured ? 'data-force' : ''}>
           <span class="${WILD_TIME}">${wildcardOf(w).targetLabel}</span>
           <span class="${WILD_SUB}">${tierSubtitle(wildcardOf(w))}</span>
           ${verdictBadge(wildcardOf(w))}
           <span class="${WILD_BADGE}" title="${wildcardOf(w).label}">${pctLabel(wildcardOf(w))}</span>
         </div>` : ''}
     `).join('');
+
+    // One click target per card, re-attached after every rebuild same as the
+    // summary click handler below. stopPropagation so opening the modal does
+    // not also toggle the card's own open/closed state — the button lives
+    // inside the <summary> it must not trigger.
+    tierChips.querySelectorAll('[data-logged-btn]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const hour = Number(btn.dataset.hour);
+        const i = windows.findIndex((w) => w.hourStart === hour);
+        if (i === -1) return;
+        const w = windows[i];
+        showLoggedModal(w, loggedForPhase(w, gapEndFor(i)));
+      });
+    });
 
     // Re-attached after every rebuild, because the elements these are bound to
     // were just replaced.
@@ -686,12 +804,14 @@
       note.style.display = 'inline-flex';
     }
     todayMinutes = Array.isArray(stats.todayMinutes) ? stats.todayMinutes : [];
-    const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours);
+    dayHistory = Array.isArray(stats.history) ? stats.history : [];
+    const windows = Tracker.classifyWindows(Tracker.normalizeWindows(stats), timeZone, workHours, todayMinutes);
     phases = windows;
     renderTiers(windows, stats.total);
     // Same inputs the badges use, so the two cannot drift apart.
     checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
       { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
+    Tracker.renderDayTimeline(dayTimeline, dayHistory, selectedDate, onDaySelect);
     Tracker.renderHeatmap(heatmapGrid, stats.heatmap, tooltip);
     totalStat.textContent = stats.total;
     peakStat.textContent = Tracker.peakLabel(stats);
@@ -755,9 +875,17 @@
       const path = currentUser ? '/sightings' : '/sightings/anonymous';
       const data = await Tracker.api(path, { method: 'POST' });
       playConfettiLottie(spotBtn);
-      if (data.alreadyLogged) showToast('Someone already logged this one moments ago.');
-      else if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
-      else showToast('Logged! Thanks for the tip.');
+      if (data.alreadyLogged) {
+        showToast('Someone already logged this one moments ago.');
+      } else {
+        if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
+        else showToast('Logged! Thanks for the tip.');
+        // Immediate verdict on THIS log, same rule as the badges — not the
+        // phase-close sweep's recap of the whole hour, but "did what I just
+        // did land on a predicted minute," told right away.
+        const { hit, line } = Tracker.loggedOutcome(phases, Tracker.nowMinutes(timeZone));
+        if (hit) hitModal.show(line); else wrongModal.show(line);
+      }
       await pollStats();
     } catch (e) {
       showToast(e.message);

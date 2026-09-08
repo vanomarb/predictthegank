@@ -71,6 +71,7 @@ async function configPayload() {
       text: settings.breaksToText(settings.get('breaks')),
     }),
     phaseCeiling: field('phaseCeiling'),
+    momentCeiling: field('momentCeiling'),
   };
 }
 

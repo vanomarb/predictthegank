@@ -191,7 +191,49 @@ const Tracker = (() => {
     });
   }
 
-  const TIER_LABEL = { sure: 'Sure', likely: 'Likely', maybe: 'Maybe', wildcard: 'Wildcard' };
+  // The field log's day-by-day FILTER: one button per recent work day (see
+  // /api/sightings/stats' `history`, oldest first). Clicking one is how the
+  // caller re-judges the phase cards' Hit/Missed badges against THAT day's
+  // actual sightings instead of today's live ones — this function only draws
+  // the buttons and reports which date was clicked; the caller owns what
+  // "selected" means and what it does with it.
+  const DT_DAY = 'shrink-0 cursor-pointer rounded-full border border-line bg-ink-900 px-3 py-1.5 text-[12px] '
+    + 'font-semibold tabular-nums text-fg-muted transition-colors duration-150 hover:border-line-strong hover:text-fg '
+    + 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400';
+  const DT_DAY_ACTIVE = 'shrink-0 cursor-pointer rounded-full border border-amber-500 bg-[rgba(242,169,59,0.12)] '
+    + 'px-3 py-1.5 text-[12px] font-semibold tabular-nums text-amber-300 transition-colors duration-150 '
+    + 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400';
+
+  // "Aug 26" from a 'YYYY-MM-DD' office-TZ date string. Parsed and rendered as
+  // UTC on purpose: the calendar day was already resolved server-side in the
+  // office's own timezone, and formatting it in the viewer's local zone could
+  // shift it a day either way (a viewer west of the office at 11pm, say).
+  function dayTimelineLabel(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d))
+      .toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' });
+  }
+
+  // selectedDate is null (nothing picked — the live "today" entry reads as
+  // active) or a 'YYYY-MM-DD' from `history`. Re-attached on every call
+  // because the buttons are rebuilt from scratch each time, same as the phase
+  // cards' own summary click handlers above.
+  function renderDayTimeline(container, history, selectedDate, onSelect) {
+    if (!container) return;
+    const days = Array.isArray(history) ? history : [];
+    container.innerHTML = days.map((d) => {
+      const active = selectedDate ? d.date === selectedDate : d.today;
+      return `<button type="button" class="${active ? DT_DAY_ACTIVE : DT_DAY}" data-date="${d.date}">`
+        + `${dayTimelineLabel(d.date)}</button>`;
+    }).join('');
+    container.querySelectorAll('button[data-date]').forEach((btn) => {
+      btn.addEventListener('click', () => onSelect(btn.dataset.date));
+    });
+  }
+
+  const TIER_LABEL = {
+    sure: 'Sure', likely: 'Likely', maybe: 'Maybe', 'long-shot': 'Long shot', wildcard: 'Wildcard',
+  };
 
   // Normalizes /api/sightings/stats' windows into a common shape, preferring
   // the Gemini-refined smartWindows when present (and well-formed) and falling
@@ -379,7 +421,19 @@ const Tracker = (() => {
   // MISSED reads as "HR never came", when the truth is often "HR came at 2:24
   // and we said 2:07" — a different, more useful thing to know, and the only
   // way to see the prediction drifting rather than simply failing.
-  function loggedInPhase(w, todayMinutes) {
+  //
+  // `gapEndMin`, when given, extends the range past the phase's own hourEnd —
+  // up to the next phase (or the end of the office day) — so a sighting in the
+  // GAP after this phase, where nothing but a wildcard chance lives, still
+  // shows up under this card's own logged list instead of nowhere at all. A
+  // 10:48 sighting after a 9-10am phase, with nothing scheduled again until the
+  // afternoon, used to vanish: outside [hourStart, hourEnd), and no other card
+  // claimed it either. Matched against every tier INCLUDING the wildcard now —
+  // that exclusion only ever mattered because the wildcard's window never used
+  // to overlap [hourStart, hourEnd); once the range reaches into the gap the
+  // wildcard is aimed at, excluding it just means a sighting that landed
+  // exactly on the wildcard's own predicted moment reads as unpredicted.
+  function loggedInPhase(w, todayMinutes, gapEndMin) {
     if (!w || w.hourStart == null || w.hourEnd == null) return [];
     // TODAY's sightings, so only a card describing today may show them.
     //
@@ -391,8 +445,8 @@ const Tracker = (() => {
     // it did not happen on.
     if (w.showingToday === false) return [];
     const from = w.hourStart * 60;
-    const to = w.hourEnd * 60;
-    const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
+    const to = gapEndMin != null ? gapEndMin : w.hourEnd * 60;
+    const moments = w.tiers || [];
     return (todayMinutes || [])
       .filter((m) => m >= from && m < to)
       .sort((a, b) => a - b)
@@ -454,8 +508,20 @@ const Tracker = (() => {
   // 16h32m — the clock had rolled on to tomorrow's first moment and the label
   // was still describing the last one. One target, one answer, every tick.
   function nextMoment(windows, timeZone, workHours) {
-    const all = allMoments(windows);
-    if (all.length === 0) return null;
+    const unfiltered = allMoments(windows);
+    if (unfiltered.length === 0) return null;
+
+    // A phase already SATISFIED today — something was logged inside its own
+    // range, see classifyWindows — doesn't need the countdown to linger on
+    // its own sure/likely/maybe, which HR has already walked past. Its
+    // wildcard is exempt: that's a distinct, later chance in the gap AFTER
+    // the phase, and one sighting inside the main range says nothing about
+    // whether HR shows up again on the way out of it. Falls back to the
+    // unfiltered list if every remaining phase is satisfied with no wildcard
+    // left either, so the countdown still has something to point at (today's
+    // ordinary schedule) rather than going blank.
+    const open = unfiltered.filter((x) => !x.window.satisfied || x.moment.tier === 'wildcard');
+    const all = open.length > 0 ? open : unfiltered;
 
     const label = (entry, now) => {
       const dayOffset = now
@@ -630,10 +696,11 @@ const Tracker = (() => {
   // featured window is the first of the next work day, and dayOffset/dayLabel
   // say which day that is ('' today, 'tomorrow', or 'Monday'). The caller needs
   // that instead of a bare "tomorrow" flag, which was wrong every weekend.
-  function classifyWindows(windows, timeZone, workHours) {
+  function classifyWindows(windows, timeZone, workHours, todayMinutes) {
     const { hour, minute, second } = localTimeParts(timeZone);
     const nowSec = hour * 3600 + minute * 60 + second;
     const todayIsWorkDay = isWorkDay(currentDayInTZ(timeZone), workHours);
+    const minutes = todayMinutes || [];
     // "Active" is now: the exact predicted moment has arrived and the window has
     // not closed yet. It used to mean "anywhere inside the hour", which was fine
     // when the hour WAS the prediction — but now that the page counts down to
@@ -641,15 +708,29 @@ const Tracker = (() => {
     // HAPPENING NOW half an hour early and the countdown would never be seen.
     // hourEnd is deliberately not wrapped with % 24: a window ending at hour 24
     // has to stay in the future all day, not wrap round to midnight.
-    const classified = windows.map((w) => ({
-      ...w,
-      label: TIER_LABEL[w.tier] || w.tier,
-      timeLabel: windowLabel(w),
-      targetLabel: windowTargetLabel(w),
-      targetSec: windowTargetSec(w),
-      passed: todayIsWorkDay && nowSec >= w.hourEnd * 3600,
-      active: todayIsWorkDay && nowSec >= windowTargetSec(w) && nowSec < w.hourEnd * 3600,
-    }));
+    const classified = windows.map((w) => {
+      // SATISFIED: something was logged inside this phase's own range today,
+      // whether or not it landed on one of the specific predicted minutes.
+      // The countdown's job is "when does HR show up next" — once they've
+      // already walked through this window, waiting out its remaining
+      // quarter-hour picks is less useful than moving on (see nextMoment,
+      // which skips the phase's own tiers but keeps its wildcard live — a
+      // sighting in the main range doesn't rule out a second one in the gap
+      // after it). The per-moment Hit/Missed badges are untouched: they still
+      // judge each predicted minute on its own once its own time passes,
+      // regardless of this early close.
+      const satisfied = todayIsWorkDay && minutes.some((m) => m >= w.hourStart * 60 && m < w.hourEnd * 60);
+      return {
+        ...w,
+        label: TIER_LABEL[w.tier] || w.tier,
+        timeLabel: windowLabel(w),
+        targetLabel: windowTargetLabel(w),
+        targetSec: windowTargetSec(w),
+        satisfied,
+        passed: todayIsWorkDay && (nowSec >= w.hourEnd * 3600 || satisfied),
+        active: todayIsWorkDay && !satisfied && nowSec >= windowTargetSec(w) && nowSec < w.hourEnd * 3600,
+      };
+    });
     // The phase that owns the next predicted moment — not simply the next phase
     // that has not closed. The two differ for a wildcard: it belongs to a phase
     // but lands after that phase's range, so once the 9-10 range closes its
@@ -657,6 +738,12 @@ const Tracker = (() => {
     // the next unclosed one. Featuring the phase the countdown is actually
     // pointing at keeps the card, the headline and the clock telling one story.
     const upcoming = nextMoment(classified, timeZone, workHours);
+    // Whether the countdown's target is the featured window's OWN moment
+    // (sure/likely/maybe) or its trailing wildcard — a phase whose own tiers
+    // are done, with only its wildcard still ahead, should read as finished
+    // (struck, collapsed), not stay open and glowing over rows that already
+    // happened. See highlight/struck/wildcardFeatured below.
+    const nextIsWildcard = !!(upcoming && upcoming.moment && upcoming.moment.tier === 'wildcard');
     let featuredIndex = upcoming ? classified.indexOf(upcoming.window) : -1;
     if (featuredIndex === -1) featuredIndex = classified.findIndex((w) => !w.passed);
     if (featuredIndex === -1) featuredIndex = 0;
@@ -708,18 +795,28 @@ const Tracker = (() => {
     //     countdown has moved to another day, which is also what stops the
     //     hit/miss verdicts being applied to a day that has not happened yet.
     //   - highlight: nothing is highlighted once the day is done, because there
-    //     is no "next" left to point at.
+    //     is no "next" left to point at. Also false when the countdown has
+    //     moved on to just this window's wildcard — see wildcardFeatured.
     //   - struck: a range is crossed out only while the card is showing today.
     //     Past work hours the countdown is on tomorrow, and tomorrow's 9am has
     //     not been and gone.
     const showingToday = dayDone || dayOffset === 0;
     return classified.map((w, i) => {
       const isFeatured = i === featuredIndex;
+      // A card only stays open and glowing while the countdown is pointing at
+      // ONE OF ITS OWN moments. Once that's done and only the trailing
+      // wildcard is left (whether the phase closed by time or was satisfied
+      // early — see classifyWindows above), the card itself reads as
+      // finished: struck through, collapsed by default. wildcardFeatured
+      // tells the template to keep just the wildcard link visible anyway.
+      const ownMomentFeatured = isFeatured && !dayDone && !nextIsWildcard;
+      const wildcardFeatured = isFeatured && !dayDone && nextIsWildcard;
       return {
         ...w,
         featured: isFeatured,
-        highlight: isFeatured && !dayDone,
-        struck: w.passed && showingToday && !(isFeatured && !dayDone),
+        highlight: ownMomentFeatured,
+        struck: w.passed && showingToday && !ownMomentFeatured,
+        wildcardFeatured,
         showingToday,
         dayOffset,
         dayLabel,
@@ -727,6 +824,29 @@ const Tracker = (() => {
         todayIsWorkDay,
       };
     });
+  }
+
+  // The same render-ready shape classifyWindows produces, but for a day that
+  // is simply OVER — no "now", no next/featured, no live passed/active math.
+  // Used for a FROZEN day pulled out of /api/sightings/stats' `history`
+  // (see routes/sightings.js' phase_history table): that day's own predicted
+  // times, next to what it actually saw, with nothing about it still open.
+  function classifyFinishedDay(windows) {
+    return (windows || []).map((w) => ({
+      ...w,
+      label: TIER_LABEL[w.tier] || w.tier,
+      timeLabel: windowLabel(w),
+      targetLabel: windowTargetLabel(w),
+      targetSec: windowTargetSec(w),
+      passed: true,
+      active: false,
+      struck: true,
+      highlight: false,
+      featured: false,
+      showingToday: true,
+      dayOffset: 0,
+      todayIsWorkDay: true,
+    }));
   }
 
   function peakLabel(stats) {
@@ -1170,7 +1290,33 @@ const Tracker = (() => {
     "Right window, right roam. We are basically meteorologists now.",
     "The pattern held. Deeply satisfying, faintly alarming.",
     "Nailed it — that is exactly when it said.",
-    "Textbook. The model saw it coming.",
+    "Gank called before it landed — the model saw the roam coming.",
+  ];
+
+  // Told to the person who JUST logged a sighting, when it landed outside
+  // every predicted minute — a different moment from MISSED_PREDICTION_LINES,
+  // which is read out when a whole window closes unwatched. The blame here
+  // has to land on the prediction, not the person: they saw something real
+  // and told everyone, which is the entire point of the button. "You logged
+  // wrong" would be a lie; "the algorithm called a different minute" is the
+  // truth.
+  const LOGGED_WRONG_LINES = [
+    "Logged. The algorithm called a different minute — that one's on it, not you.",
+    "Recorded. Nice catch — the prediction just missed the timing.",
+    "Noted, thanks. The model predicted wrong; you predicted nothing and still won.",
+    "Logged straight. The algorithm's guess just wasn't it.",
+    "Got it. Wrong minute, wrong model — right sighting.",
+  ];
+
+  // A near miss on the same logged action — the gank happened, just not on the
+  // exact minute called, and close enough (within LOGGED_CLOSE_MAX_GAP_MIN) that
+  // "wrong" undersells it. Each line is a template over the actual gap in
+  // minutes rather than one more static line, so "so close" says how close.
+  const LOGGED_CLOSE_MAX_GAP_MIN = 3;
+  const LOGGED_CLOSE_LINES = [
+    (gap) => `So close — the gank landed just ${gap} minute${gap === 1 ? '' : 's'} off the call.`,
+    (gap) => `Almost! Missed the predicted roam by ${gap} minute${gap === 1 ? '' : 's'}.`,
+    (gap) => `Painfully close — ${gap} minute${gap === 1 ? '' : 's'} from a perfect call.`,
   ];
 
   const pick = (lines) => lines[Math.floor(Math.random() * lines.length)];
@@ -1198,17 +1344,57 @@ const Tracker = (() => {
   // thing it is judging. It keeps its own badge — and, below, its own miss
   // check, judged against its own window rather than the phase's.
   //
-  // Reports each phase once, when it CLOSES. Phases that had already closed when
-  // the page opened are recorded as seen without firing: a modal about a window
-  // that ended before anyone loaded the page is not news, and three of them
-  // stacking up on a mid-afternoon refresh is worse.
+  // Reports each phase once, when it CLOSES. Phases that had already closed
+  // the FIRST TIME this browser ever watched today are recorded as seen
+  // without firing: a modal about a window that ended before anyone loaded
+  // the page is not news, and three of them stacking up on a mid-afternoon
+  // refresh is worse.
   //
-  // Takes { onHit, onMiss }; either may be omitted. onHit is given the number of
-  // predicted moments that landed, and how many there were.
+  // "reported" and that first-watch marker are persisted to localStorage
+  // (keyed by calendar day), not just held in the closure. A backgrounded tab
+  // is exactly the kind Chrome/Safari will silently discard and reload under
+  // memory pressure — the tab looks merely unfocused from the outside, but
+  // the JS context, and every in-memory Set, is gone. Without the persisted
+  // copy, that reload re-primes from scratch: any window that closed while
+  // the tab was away gets swept into "already seen" by the same rule meant
+  // for the page's true first load, and its hit/miss never surfaces — while
+  // the badge underneath, which reads todayMinutes fresh on every render,
+  // shows the correct verdict anyway. The two disagreeing is the bug: no
+  // modal, right badge.
+  //
+  // Takes { onHit, onMiss, storageKey }; onHit/onMiss may be omitted.
+  // storageKey namespaces the persisted state (default covers callers that
+  // don't care) — the public tracker and admin console each run their own
+  // watcher and should not silently consume each other's unreported windows.
+  // onHit is given the number of predicted moments that landed, and how many
+  // there were.
   function createPredictionWatcher(handlers) {
-    const { onHit, onMiss } = handlers || {};
-    const reported = new Set();
-    let primed = false;
+    const { onHit, onMiss, storageKey } = handlers || {};
+    const STORAGE_KEY = `hr:predictionWatcher:${storageKey || 'default'}`;
+
+    function todayKey() {
+      const d = new Date();
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    }
+
+    function loadReported() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        return parsed && parsed.day === todayKey() ? parsed : null;
+      } catch (e) { return null; } // private mode, corrupt JSON, no localStorage
+    }
+
+    function saveReported(set) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ day: todayKey(), reported: [...set] }));
+      } catch (e) { /* private mode — the tab just re-primes if it reloads */ }
+    }
+
+    const saved = loadReported();
+    const reported = new Set(saved ? saved.reported : []);
+    // Already primed earlier today (even if that was a prior, now-discarded
+    // page instance) — never re-silence a window on this instance's account.
+    let primed = !!saved;
 
     return function check(windows, todayMinutes, nowMin, opts) {
       const { todayIsWorkDay = true } = opts || {};
@@ -1229,17 +1415,20 @@ const Tracker = (() => {
           .filter((t) => t && t.windowTo != null && nowMin >= t.windowTo)
         : [];
 
-      // First call of the session: note what has already been and gone.
+      // First call of the day: note what has already been and gone.
       if (!primed) {
         primed = true;
         closed.forEach((w) => reported.add(w.hourStart));
         wildcards.forEach((t) => reported.add(`wildcard:${t.windowTo}`));
+        saveReported(reported);
         return;
       }
 
+      let changed = false;
       for (const w of closed) {
         if (reported.has(w.hourStart)) continue;
         reported.add(w.hourStart);
+        changed = true;
 
         const moments = (w.tiers || []).filter((t) => t.tier !== 'wildcard');
         if (moments.length === 0) continue;
@@ -1257,12 +1446,44 @@ const Tracker = (() => {
         const key = `wildcard:${t.windowTo}`;
         if (reported.has(key)) continue;
         reported.add(key);
+        changed = true;
         if (onMiss && momentOutcome(t, todayMinutes, nowMin,
           { todayIsWorkDay, dayOffset: 0 }) === 'missed') {
           onMiss(pick(MISSED_PREDICTION_LINES));
         }
       }
+
+      if (changed) saveReported(reported);
     };
+  }
+
+  // Did THIS ACTION — the sighting just logged, at this specific minute —
+  // land on one of today's predicted moments? Same rule as the per-moment
+  // Hit/Missed badges (momentOutcome) and the phase-close watcher above, but
+  // asked immediately about one click rather than swept up once a phase
+  // closes: the person who just logged it gets told right away, not five
+  // minutes later when the hour happens to end. Wildcards count too — a
+  // sighting landing in the gap between phases is still a real hit.
+  //
+  // A miss also measures its DISTANCE to the nearest predicted window — early
+  // if logged before windowFrom, late if at/after windowTo — and a miss inside
+  // LOGGED_CLOSE_MAX_GAP_MIN gets its own "so close" line naming that gap
+  // instead of the generic wrong-call one. A prediction off by one minute and
+  // one off by an hour are not the same result.
+  function loggedOutcome(windows, minute) {
+    const moments = allMoments(windows).map((x) => x.moment).filter((m) => m.windowFrom != null);
+    const hit = moments.some((m) => minute >= m.windowFrom && minute < m.windowTo);
+    if (hit) return { hit: true, line: pick(HIT_PREDICTION_LINES) };
+
+    let nearestGap = null;
+    for (const m of moments) {
+      const gap = minute < m.windowFrom ? m.windowFrom - minute : minute - m.windowTo + 1;
+      if (nearestGap === null || gap < nearestGap) nearestGap = gap;
+    }
+    const line = nearestGap != null && nearestGap <= LOGGED_CLOSE_MAX_GAP_MIN
+      ? pick(LOGGED_CLOSE_LINES)(nearestGap)
+      : pick(LOGGED_WRONG_LINES);
+    return { hit: false, line };
   }
 
   // setInterval wrapper paused via the Page Visibility API. Idempotent start.
@@ -1344,7 +1565,8 @@ const Tracker = (() => {
 
   return {
     DAYS, DAYS_FULL, api, hourLabel, heatColor, attachTooltip, renderHeatmap,
-    normalizeWindows, classifyWindows, peakLabel, createPoller, createTicker,
+    renderDayTimeline,
+    normalizeWindows, classifyWindows, classifyFinishedDay, peakLabel, createPoller, createTicker,
     secondsUntilHour, secondsUntilWindow, daysUntilWindow, isWorkDay,
     windowTargetSec, windowTargetLabel, secondsUntilTarget, sureRow,
     allMoments, nextMoment,
@@ -1352,7 +1574,7 @@ const Tracker = (() => {
     breaksLabel,
     formatCountdown, getConfig, getTimezone, initThemeToggle,
     lottieLib, toast, confettiBurst, initAdvisory,
-    createPredictionWatcher,
+    createPredictionWatcher, loggedOutcome,
     workHoursState, currentDayInTZ, dayTally,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
     playAlarmSound, initSoundPicker,

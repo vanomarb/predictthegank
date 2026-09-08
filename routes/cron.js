@@ -25,7 +25,7 @@
  */
 
 const express = require('express');
-const { recomputeSmartPrediction } = require('./sightings');
+const { recomputeSmartPrediction, snapshotTodayPhases } = require('./sightings');
 const { getWorkHours, getTimeZone } = require('../services/work-hours');
 
 const router = express.Router();
@@ -67,11 +67,19 @@ router.get('/refresh-prediction', async (req, res) => {
     return res.json({ ok: true, skipped: 'not a work day', day });
   }
 
+  // Freeze today's own phases BEFORE recomputing the AI answer for tomorrow —
+  // otherwise this would snapshot tomorrow's prediction as if it were today's.
+  // See the note on snapshotTodayPhases in routes/sightings.js.
+  const snapshot = await snapshotTodayPhases();
+  console.log('[cron] snapshot-phases:', JSON.stringify(snapshot));
+
   const result = await recomputeSmartPrediction();
   console.log('[cron] refresh-prediction:', JSON.stringify(result));
-  // A failed refresh answers with a failing status, so it shows as a failure in
-  // Vercel's cron log instead of a green tick over a job that did nothing.
-  return res.status(result.ok ? 200 : 500).json({ ok: result.ok, ...result });
+  // A failed refresh (or a failed snapshot) answers with a failing status, so
+  // it shows as a failure in Vercel's cron log instead of a green tick over a
+  // job that did nothing.
+  const ok = result.ok && snapshot.ok;
+  return res.status(ok ? 200 : 500).json({ ok, snapshot, prediction: result });
 });
 
 module.exports = router;

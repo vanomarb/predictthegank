@@ -144,61 +144,81 @@ const MAX_RATIONALE = 200;
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// The three tiers a moment inside a phase can carry, strongest first. The model
-// assigns them: which of its own predicted minutes it is most sure of is a
-// judgement about the pattern, and it is the thing being asked for a judgement.
-const MOMENT_TIERS = ['sure', 'likely', 'maybe'];
+// The tiers a moment inside a phase can carry, strongest first, each with the
+// one-line description the prompt puts beside it. The model assigns them:
+// which of its own predicted minutes it is most sure of is a judgement about
+// the pattern, and it is the thing being asked for a judgement.
+//
+// Four long, not three: getMomentCeiling() (1-4, see services/settings.js)
+// decides how many of these a phase actually gets, same "ceiling, not a
+// target" idea as maxWindows below it. This list holds every tier that ceiling
+// could ever ask for; MOMENT_TIERS is the full set of names, and every
+// request builds its OWN schema restricted to just the active ones — the
+// enum the model answers against has to match the ceiling in force, or a
+// ceiling of 3 would still let it hand back a 4th tier nobody asked for.
+const TIER_DEFS = [
+  { tier: 'sure', blurb: 'the single minute you would bet on in this range' },
+  { tier: 'likely', blurb: 'the next most probable minute in it' },
+  { tier: 'maybe', blurb: 'a third, weaker one' },
+  { tier: 'long-shot', blurb: 'a fourth, weaker still' },
+];
+const MOMENT_TIERS = TIER_DEFS.map((t) => t.tier);
 
-const MOMENT_SCHEMA = {
-  type: 'object',
-  properties: {
-    tier: { type: 'string', enum: MOMENT_TIERS, description: 'sure, likely or maybe' },
-    hour: { type: 'integer', description: '0-23, local hour of this exact moment' },
-    minute: { type: 'integer', description: '0-59, local minute of this exact moment' },
-    likelihood: { type: 'integer', description: '0-100, chance of a roam in this exact minute' },
-  },
-  required: ['tier', 'hour', 'minute', 'likelihood'],
-};
+function momentSchema(activeTiers) {
+  return {
+    type: 'object',
+    properties: {
+      tier: { type: 'string', enum: activeTiers, description: activeTiers.join(', ') },
+      hour: { type: 'integer', description: '0-23, local hour of this exact moment' },
+      minute: { type: 'integer', description: '0-59, local minute of this exact moment' },
+      likelihood: { type: 'integer', description: '0-100, chance of a roam in this exact minute' },
+    },
+    required: ['tier', 'hour', 'minute', 'likelihood'],
+  };
+}
 
-const RESPONSE_SCHEMA = {
-  type: 'object',
-  properties: {
-    windows: {
-      type: 'array',
-      description: 'Candidate roam phases for a normal work day, in clock order, earliest first.',
-      items: {
-        type: 'object',
-        properties: {
-          predictedHourStart: { type: 'integer', description: '0-23, local hour, inclusive' },
-          predictedHourEnd: { type: 'integer', description: '1-24, local hour, exclusive' },
-          confidence: { type: 'number', description: '0 to 1, how consistently this range recurs' },
-          rationale: { type: 'string', description: 'One short sentence, plain language, about this range' },
-          moments: {
-            type: 'array',
-            description: 'The exact minutes inside this range, one per tier, at most three.',
-            items: MOMENT_SCHEMA,
+function responseSchema(activeTiers) {
+  return {
+    type: 'object',
+    properties: {
+      windows: {
+        type: 'array',
+        description: 'Candidate roam phases for a normal work day, in clock order, earliest first.',
+        items: {
+          type: 'object',
+          properties: {
+            predictedHourStart: { type: 'integer', description: '0-23, local hour, inclusive' },
+            predictedHourEnd: { type: 'integer', description: '1-24, local hour, exclusive' },
+            confidence: { type: 'number', description: '0 to 1, how consistently this range recurs' },
+            rationale: { type: 'string', description: 'One short sentence, plain language, about this range' },
+            moments: {
+              type: 'array',
+              description: `The exact minutes inside this range, one per tier, at most `
+                + `${activeTiers.length}.`,
+              items: momentSchema(activeTiers),
+            },
           },
+          required: ['predictedHourStart', 'predictedHourEnd', 'confidence', 'rationale', 'moments'],
         },
-        required: ['predictedHourStart', 'predictedHourEnd', 'confidence', 'rationale', 'moments'],
+      },
+      wildcards: {
+        type: 'array',
+        description: 'Low-probability moments in the GAPS BETWEEN phases, never inside one.',
+        items: {
+          type: 'object',
+          properties: {
+            hour: { type: 'integer', description: '0-23, local hour' },
+            minute: { type: 'integer', description: '0-59, local minute' },
+            likelihood: { type: 'integer', description: '0-100, and it should be low' },
+            rationale: { type: 'string', description: 'One short clause on why a roam might happen here' },
+          },
+          required: ['hour', 'minute', 'likelihood', 'rationale'],
+        },
       },
     },
-    wildcards: {
-      type: 'array',
-      description: 'Low-probability moments in the GAPS BETWEEN phases, never inside one.',
-      items: {
-        type: 'object',
-        properties: {
-          hour: { type: 'integer', description: '0-23, local hour' },
-          minute: { type: 'integer', description: '0-59, local minute' },
-          likelihood: { type: 'integer', description: '0-100, and it should be low' },
-          rationale: { type: 'string', description: 'One short clause on why a roam might happen here' },
-        },
-        required: ['hour', 'minute', 'likelihood', 'rationale'],
-      },
-    },
-  },
-  required: ['windows'],
-};
+    required: ['windows'],
+  };
+}
 
 const hhmm = (minutes) =>
   `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
@@ -209,8 +229,20 @@ function describeBreaks(breaks) {
     + `${breaks.map((b) => `${hhmm(b.start)}-${hhmm(b.end)}`).join(', ')}.`;
 }
 
-function buildPrompt({ sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows }) {
+function buildPrompt({
+  sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows, maxMoments,
+}) {
   const workDays = workHours.days.map((d) => DAY_NAMES[d]).join(', ');
+  const activeTiers = TIER_DEFS.slice(0, maxMoments);
+  // Padded so every "—" lines up in a monospace reading of the prompt, same as
+  // when this was three hardcoded lines — cosmetic for whoever reads the
+  // prompt text, invisible to the model. "long-shot" is longer than the
+  // column the first three tiers fit in, so it just gets the one-space
+  // minimum instead of lining up.
+  const tierBullets = activeTiers
+    .map(({ tier, blurb }) => `  • "${tier}"${' '.repeat(Math.max(1, 9 - (tier.length + 2)))}— ${blurb}\n`)
+    .join('');
+  const strongestTier = activeTiers[0].tier;
   return `You are analyzing timestamps of sightings of an office HR person roaming past `
     + `coworkers' desks, logged by a team for fun.\n\n`
 
@@ -232,14 +264,12 @@ function buildPrompt({ sightingTimestamps, heatmap, total, workHours, breaks, ti
     + `usually one hour long. Return them in clock order, earliest first.\n\n`
 
     + `Inside each phase, return its MOMENTS: the exact minutes a roam is most likely, `
-    + `one per tier, at most three per phase.\n`
-    + `  • "sure"   — the single minute you would bet on in this range\n`
-    + `  • "likely" — the next most probable minute in it\n`
-    + `  • "maybe"  — a third, weaker one\n`
+    + `one per tier, at most ${activeTiers.length} per phase.\n`
+    + tierBullets
     + `Give each moment a likelihood: 0-100, the chance a roam happens in THAT EXACT `
     + `MINUTE. A prediction of 14:07 counts as correct only for the 60 seconds from `
-    + `14:07:00 to 14:07:59, so these numbers should be modest and honest, and "sure" `
-    + `must carry the highest of the three.\n\n`
+    + `14:07:00 to 14:07:59, so these numbers should be modest and honest`
+    + (activeTiers.length > 1 ? `, and "${strongestTier}" must carry the highest of them.\n\n` : '.\n\n')
 
     + `Also return WILDCARDS: single low-probability minutes in the GAPS BETWEEN phases, `
     + `at most one per gap. These are the off-pattern roams — the unexpected walk-past `
@@ -320,15 +350,22 @@ function usableMinute(hour, minute, { workHours, breaks, from, to }) {
   return at;
 }
 
-// The moments inside one phase: at most one per tier, all inside the phase's own
-// range, none in a break, in clock order.
-function sanitizeMoments(moments, { workHours, breaks, from, to }) {
+// The moments inside one phase: at most one per tier, all inside the phase's
+// own range, none in a break, in clock order.
+//
+// maxMoments (1-4, defaulting to every tier there is) is the ceiling in force
+// — see getMomentCeiling in services/work-hours.js. A moment naming a tier
+// beyond it is dropped rather than clamped into range: a stored answer from
+// before an admin lowered the ceiling should not have its 4th tier silently
+// relabeled "long-shot"-that-is-actually-"maybe".
+function sanitizeMoments(moments, { workHours, breaks, from, to, maxMoments = MOMENT_TIERS.length }) {
+  const activeTiers = MOMENT_TIERS.slice(0, maxMoments);
   const seenTier = new Set();
   const seenMinute = new Set();
   return (Array.isArray(moments) ? moments : [])
     .map((m) => {
       const tier = String(m.tier || '').toLowerCase();
-      if (!MOMENT_TIERS.includes(tier)) return null;
+      if (!activeTiers.includes(tier)) return null;
       const at = usableMinute(Number(m.hour), Number(m.minute), { workHours, breaks, from, to });
       if (at === null) return null;
       return {
@@ -351,7 +388,7 @@ function sanitizeMoments(moments, { workHours, breaks, from, to }) {
       seenMinute.add(m.hour * 60 + m.minute);
       return true;
     })
-    .slice(0, MOMENT_TIERS.length)
+    .slice(0, activeTiers.length)
     .sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
 }
 
@@ -361,7 +398,7 @@ function sanitizeMoments(moments, { workHours, breaks, from, to }) {
  * Takes the already-sanitized windows, because "in a gap" is only answerable
  * once you know which ranges are real. A wildcard inside a phase is dropped
  * rather than moved: it contradicts the one thing that makes a wildcard a
- * wildcard, and a phase already has three moments of its own.
+ * wildcard, and a phase already has moments of its own.
  *
  * At most one per gap, the likeliest, so two cards cannot both claim the same
  * stretch of the afternoon.
@@ -412,7 +449,7 @@ function sanitizeWildcards(wildcards, { workHours, breaks = [], windows = [] }) 
  *
  * Pure and exported so it can be tested without an API key.
  */
-function sanitizeWindows(windows, { workHours, breaks = [], max = 3 }) {
+function sanitizeWindows(windows, { workHours, breaks = [], max = 3, maxMoments = MOMENT_TIERS.length }) {
   const seen = new Set();
   return (Array.isArray(windows) ? windows : [])
     .map((w) => {
@@ -437,7 +474,7 @@ function sanitizeWindows(windows, { workHours, breaks = [], max = 3 }) {
       // asked for: a phase trimmed from 8-10 to 9-10 must not keep an 8:40
       // moment that is now outside its own card.
       const moments = sanitizeMoments(w.moments, {
-        workHours, breaks, from: hourStart * 60, to: hourEnd * 60,
+        workHours, breaks, from: hourStart * 60, to: hourEnd * 60, maxMoments,
       });
       // A phase with no usable moment has nothing to show but its own title.
       if (moments.length === 0) return null;
@@ -473,7 +510,10 @@ function sanitizeWindows(windows, { workHours, breaks = [], max = 3 }) {
 // The last two used to be the same answer, null, and the cron reported both as
 // ok: true — so a deploy where every single Gemini call was rejected looked
 // exactly like a deploy with the feature deliberately switched off.
-async function getSmartWindows({ sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows = 3, model }) {
+async function getSmartWindows({
+  sightingTimestamps, heatmap, total, workHours, breaks, timeZone,
+  maxWindows = 3, maxMoments = MOMENT_TIERS.length, model,
+}) {
   if (!process.env.GEMINI_API_KEY) return null;
 
   // Supplied by the caller, which is where the settings live; resolved once
@@ -486,7 +526,7 @@ async function getSmartWindows({ sightingTimestamps, heatmap, total, workHours, 
     // A controller per attempt: an aborted one stays aborted, so reusing it
     // would make the retry fail instantly with the first attempt's error.
     const answer = await attemptSmartWindows({
-      sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows, model,
+      sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows, maxMoments, model,
     });
     if (!answer.error) return answer;
     last = answer;
@@ -500,7 +540,9 @@ async function getSmartWindows({ sightingTimestamps, heatmap, total, workHours, 
 }
 
 // One attempt. Never throws; returns { windows, wildcards } or { error }.
-async function attemptSmartWindows({ sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows, model }) {
+async function attemptSmartWindows({
+  sightingTimestamps, heatmap, total, workHours, breaks, timeZone, maxWindows, maxMoments, model,
+}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -512,7 +554,12 @@ async function attemptSmartWindows({ sightingTimestamps, heatmap, total, workHou
       breaks,
       timeZone: timeZone || 'UTC',
       maxWindows,
+      maxMoments,
     });
+    // The enum the model answers against has to be exactly the tiers in play
+    // — see the note on TIER_DEFS above — so the schema is built per call
+    // rather than kept as one constant.
+    const activeTiers = MOMENT_TIERS.slice(0, maxMoments);
     const res = await fetch(`${endpointFor(model)}?key=${process.env.GEMINI_API_KEY}`, {
       method: 'POST',
       signal: controller.signal,
@@ -521,7 +568,7 @@ async function attemptSmartWindows({ sightingTimestamps, heatmap, total, workHou
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          responseSchema: RESPONSE_SCHEMA,
+          responseSchema: responseSchema(activeTiers),
           // A LOW budget, not zero.
           //
           // This was `thinkingBudget: 0` — structured classification does not
@@ -556,7 +603,9 @@ async function attemptSmartWindows({ sightingTimestamps, heatmap, total, workHou
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed.windows) || parsed.windows.length === 0) throw new Error('malformed windows response');
 
-    const windows = sanitizeWindows(parsed.windows, { workHours, breaks, max: maxWindows });
+    const windows = sanitizeWindows(parsed.windows, {
+      workHours, breaks, max: maxWindows, maxMoments,
+    });
     if (windows.length === 0) throw new Error('no window survived the office rules');
     if (windows.length !== parsed.windows.length) {
       console.warn(`[gemini] kept ${windows.length} of ${parsed.windows.length} windows `

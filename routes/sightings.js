@@ -4,17 +4,31 @@ const { requireAuth, requireAdmin, optionalAuth } = require('../middleware/auth'
 const { getSmartWindows, sanitizeWindows, sanitizeWildcards } = require('../services/gemini');
 const settings = require('../services/settings');
 const { getOrCreateSystemAccountId } = require('../services/system-accounts');
-const { getWorkHours, getBreaks, getTimeZone, getPhaseCeiling } = require('../services/work-hours');
+const {
+  getWorkHours, getBreaks, getTimeZone, getPhaseCeiling, getMomentCeiling,
+} = require('../services/work-hours');
 
 // The confidence labels for the moments inside a range, strongest first. They
 // live here rather than in services/gemini.js because the model no longer
 // assigns them — the quarter-hour ranking in tiersForHour does.
-const TIERS = ['sure', 'likely', 'maybe'];
+//
+// Four long, not three: a phase is one hour split into four 15-minute quarters
+// (see quarterBuckets below), so four is the most tiers a phase can ever have
+// one quarter each for. getMomentCeiling() (1-4, see services/settings.js)
+// decides how many of these actually get used; TIERS itself always lists all
+// four so the ceiling can be raised without a code change.
+const TIERS = ['sure', 'likely', 'maybe', 'long-shot'];
 
 const router = express.Router();
-const DEDUP_WINDOW_SECONDS = 2 * 60;
+// Two logs merge into one sighting only if they land strictly under a minute
+// apart (so at most 59s): the check is ABS(ts - now) < this, which is a window
+// either side of the new log, not a span. Anything wider and two genuinely
+// separate roams a couple of minutes apart collapse into a single sighting.
+const DEDUP_WINDOW_SECONDS = 60;
 const SIGHTING_LOCK_KEY = 8817231; // arbitrary fixed advisory-lock key for the sightings resource
 const OFFICE_HOURS = { start: 9, end: 18 }; // 9:00am-6:00pm
+const HISTORY_DAYS = 5; // how many past work days the field-log timeline shows
+const UNDEFINED_TABLE = '42P01'; // Postgres: undefined_table — see services/settings.js
 
 const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
@@ -68,6 +82,26 @@ function dateMinutesInTZ(ts) {
   return { date, minutes: hour * 60 + minute };
 }
 
+// The last `n` calendar dates (YYYY-MM-DD, office TIMEZONE) that fall on a
+// configured work day, most recent first — including today if today itself
+// qualifies. Walks backward a real day at a time rather than doing date
+// arithmetic in UTC, so the office's own DST transitions can't shift it onto
+// the wrong date.
+function recentWorkDays(n, workDays) {
+  const dates = [];
+  const seen = new Set();
+  let ts = Math.floor(Date.now() / 1000);
+  while (dates.length < n) {
+    const { date } = dateMinutesInTZ(ts);
+    if (!seen.has(date)) {
+      seen.add(date);
+      if (workDays.includes(dayHourInTZ(ts).day)) dates.push(date);
+    }
+    ts -= 86400;
+  }
+  return dates;
+}
+
 // Shared by GET /stats and the post-log Gemini trigger below.
 async function buildHeatmapAndPrediction() {
   const rows = await db.many(`
@@ -107,9 +141,39 @@ async function buildHeatmapAndPrediction() {
   const medianGap = medianGapMinutes(sightingTimestamps);
   const breaks = getBreaks();
   const windows = computePhases(heatmap, minutesOfDay, rows.length, medianGap, breaks);
+
+  // The field log's day-by-day timeline: the last HISTORY_DAYS work days, each
+  // with its own actual sightings (minutes-since-midnight, like todayMinutes)
+  // and, where one was frozen (see phase_history / snapshotTodayPhases), that
+  // day's OWN phases — the pattern as it stood when that day actually closed,
+  // not whatever the live pattern has since drifted into. A day with no frozen
+  // row yet (today, still in progress, or a deploy from before this table
+  // existed) falls back to the live `windows`/`smartWindows` GET /stats is
+  // already serving, same as before this table existed.
+  const perDate = new Map();
+  sightingTimestamps.forEach((ts) => {
+    const { date, minutes } = dateMinutesInTZ(ts);
+    if (!perDate.has(date)) perDate.set(date, []);
+    perDate.get(date).push(minutes);
+  });
+  const historyDates = recentWorkDays(HISTORY_DAYS, getWorkHours().days);
+  const frozen = await readPhaseHistoryFor(historyDates);
+  const history = historyDates
+    .map((date) => {
+      const snapshot = frozen.get(date);
+      return {
+        date,
+        today: date === today,
+        minutes: (perDate.get(date) || []).sort((a, b) => a - b),
+        windows: snapshot ? snapshot.windows : null,
+        smartWindows: snapshot ? snapshot.smartWindows : null,
+      };
+    })
+    .reverse(); // oldest first — a timeline reads left to right
+
   return {
     total: rows.length, heatmap, byPerson, sightingTimestamps,
-    minutesOfDay, todayMinutes, medianGap, windows,
+    minutesOfDay, todayMinutes, medianGap, windows, history,
   };
 }
 
@@ -201,17 +265,17 @@ function quarterBuckets(from, to, minutesOfDay, breaks) {
 const quarterLabel = (b) =>
   `:${String(b.from % 60).padStart(2, '0')}\u2013:${String(b.to % 60).padStart(2, '0')}`;
 
-function tiersForHour(minutesOfDay, hourStart, breaks, total) {
+function tiersForHour(minutesOfDay, hourStart, breaks, total, momentCeiling = getMomentCeiling()) {
   const base = hourStart * 60;
   const buckets = quarterBuckets(base, base + 60, minutesOfDay, breaks);
   // Busiest quarter first; ties break to the earlier one so the same data always
   // produces the same prediction.
   const ranked = buckets.slice().sort((a, b) => b.values.length - a.values.length || a.from - b.from);
 
-  // Fewer tiers than TIERS when breaks have eaten into the hour. Three of four
-  // quarters is the usual worst case; an hour with nothing left never gets here,
-  // computePhases drops it first.
-  return ranked.slice(0, TIERS.length).map((b, i) => {
+  // Fewer tiers than the ceiling when breaks have eaten into the hour, or when
+  // an admin has set the ceiling below 4. An hour with nothing left never gets
+  // here, computePhases drops it first.
+  return ranked.slice(0, momentCeiling).map((b, i) => {
     const at = b.values.length ? medianOf(b.values) : Math.round((b.from + b.to - 1) / 2);
     return {
       tier: TIERS[i],
@@ -485,9 +549,10 @@ async function recomputeSmartPrediction() {
     const { heatmap, sightingTimestamps, total } = await buildHeatmapAndPrediction();
     if (total === 0) return { ok: true, skipped: 'no sightings logged yet' };
     // The model is given the office's rules — work hours, work days, breaks —
-    // and how many phases the page has room for, so its ranges come back fitting
-    // the day they describe. It is also held to them on the way back; see
-    // sanitizeWindows in services/gemini.js.
+    // how many phases the page has room for, and how many moments each phase
+    // may show, so its ranges come back fitting the day they describe. It is
+    // also held to both ceilings on the way back; see sanitizeWindows in
+    // services/gemini.js.
     const smart = await getSmartWindows({
       sightingTimestamps,
       heatmap,
@@ -496,6 +561,7 @@ async function recomputeSmartPrediction() {
       breaks: getBreaks(),
       timeZone: getTimeZone(),
       maxWindows: getPhaseCeiling(),
+      maxMoments: getMomentCeiling(),
       // Whichever model is in force: an admin's dashboard choice, else
       // GEMINI_MODEL, else the built-in default. See services/settings.js.
       model: settings.get('aiModel'),
@@ -714,6 +780,131 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res, next) => {
   }
 });
 
+// THE WHOLE PREDICTION IS THE MODEL'S. Its ranges, its minutes, its
+// percentages, its wildcards — nothing here recomputes any of them.
+//
+// They used to be recomputed: Gemini was asked only for the hour range and
+// the statistical engine filled in the rest, which meant that whenever the
+// model picked the hours the counts already ranked highest — with a clean
+// pattern, every time — the AI prediction came out byte-identical to the
+// statistical one and the card said "AI" over numbers the model had never
+// produced. Two analyses that cannot disagree are one analysis.
+//
+// The one value still computed is `count`: how many sightings have actually
+// landed in that range, all-time. That is a measurement of the past, not a
+// prediction of the day, and the card labels it "all-time".
+//
+// Sanitized again on the way out, not only on the way in. What is stored was
+// written by a previous deploy under whatever rules were in force then;
+// change WORK_HOURS_END or BREAK_TIMES and yesterday's stored answer can
+// suddenly straddle a break or sit after closing. Re-checking here costs
+// nothing and means a config change takes effect immediately rather than at
+// the next cron run.
+//
+// Shared by GET /stats (the live "today" prediction) and snapshotTodayPhases
+// (which freezes this same shape into phase_history at end of day) — one
+// place turns a stored AI answer into the tiers/wildcard shape the page
+// renders, so the two can never drift apart.
+function buildSmartWindows({ stored, minutesOfDay, total }) {
+  if (!stored) return null;
+  const breaks = getBreaks();
+  const workHours = getWorkHours();
+  const clean = sanitizeWindows(stored.windows, {
+    workHours, breaks, max: getPhaseCeiling(), maxMoments: getMomentCeiling(),
+  });
+  const wilds = sanitizeWildcards(stored.wildcards, { workHours, breaks, windows: clean });
+  return clean.map((w, i) => {
+    const from = w.predictedHourStart * 60;
+    const to = w.predictedHourEnd * 60;
+    const moments = w.moments.map((m) => ({
+      ...m,
+      source: 'ai',
+      // The 59-second rule is the app's, not the model's: a prediction of
+      // 14:07 is met from 14:07:00 to 14:07:59 and missed at 14:08. Applied
+      // here so an AI moment and a statistical one are judged identically.
+      ...hitWindow(m.hour * 60 + m.minute),
+    }));
+    // The wildcard for the gap AFTER this phase, so it renders between this
+    // card and the next exactly as the statistical one does.
+    const wild = wilds.find((x) => x.afterWindow === i);
+    return {
+      hourStart: w.predictedHourStart,
+      hourEnd: w.predictedHourEnd,
+      count: minutesOfDay.filter((m) => m >= from && m < to).length,
+      total,
+      confidence: w.confidence,
+      rationale: w.rationale,
+      tiers: wild
+        ? [...moments, {
+          tier: 'wildcard',
+          hour: wild.hour,
+          minute: wild.minute,
+          pct: wild.pct,
+          note: wild.note,
+          source: 'ai',
+          ...hitWindow(wild.hour * 60 + wild.minute),
+        }]
+        : moments,
+    };
+  });
+}
+
+// Freezes today's own served phases — statistical, and AI if in use — into
+// phase_history, keyed on today's date. Called from the cron job right at the
+// end of the working day (see routes/cron.js), BEFORE recomputeSmartPrediction
+// overwrites the AI singleton for tomorrow: this has to read what was actually
+// being shown today, not what tomorrow's answer will be.
+//
+// Idempotent (ON CONFLICT DO UPDATE) so a cron retry or a manual re-trigger
+// the same day doesn't fail or duplicate. Degrades like app_settings if the
+// migration hasn't run yet — a missing table just means no day gets frozen,
+// same as before this feature existed.
+async function snapshotTodayPhases() {
+  try {
+    const {
+      total, minutesOfDay, windows,
+    } = await buildHeatmapAndPrediction();
+    const stored = await readStoredSmartPrediction();
+    const smartWindows = buildSmartWindows({ stored, minutesOfDay, total });
+    const today = dateMinutesInTZ(Math.floor(Date.now() / 1000)).date;
+    await db.query(
+      `INSERT INTO phase_history (date, windows, smart_windows, computed_at)
+       VALUES ($1, $2, $3, EXTRACT(EPOCH FROM now())::bigint)
+       ON CONFLICT (date) DO UPDATE SET
+         windows = EXCLUDED.windows,
+         smart_windows = EXCLUDED.smart_windows,
+         computed_at = EXCLUDED.computed_at`,
+      [today, JSON.stringify(windows), smartWindows ? JSON.stringify(smartWindows) : null]
+    );
+    return { ok: true, date: today };
+  } catch (e) {
+    if (e.code === UNDEFINED_TABLE) {
+      console.warn('[phase_history] table missing — run migrations/0006_phase_history.sql. Skipping snapshot.');
+      return { ok: true, skipped: 'phase_history table missing' };
+    }
+    console.error('[phase_history] failed to snapshot today\'s phases:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// The frozen phases for each date in `dates` that has one, keyed by date.
+// Dates with no row (a deploy predating this table, or today, still in
+// progress) simply have no entry — buildHeatmapAndPrediction's history falls
+// back to the live pattern for those.
+async function readPhaseHistoryFor(dates) {
+  if (dates.length === 0) return new Map();
+  try {
+    const rows = await db.many(
+      'SELECT date, windows, smart_windows FROM phase_history WHERE date = ANY($1)',
+      [dates]
+    );
+    return new Map(rows.map((r) => [r.date, { windows: r.windows, smartWindows: r.smart_windows }]));
+  } catch (e) {
+    if (e.code !== UNDEFINED_TABLE) throw e;
+    return new Map();
+  }
+}
+
 // Unauthenticated-friendly: the public landing page polls this every 5s. Per-person
 // attribution (byPerson) is only included for logged-in requests. Never calls
 // Gemini itself — smartWindows is whatever the daily cron last persisted (see
@@ -721,73 +912,14 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res, next) => {
 router.get('/stats', optionalAuth, async (req, res, next) => {
   try {
     const {
-      total, heatmap, byPerson, minutesOfDay, todayMinutes, medianGap, windows,
+      total, heatmap, byPerson, minutesOfDay, todayMinutes, medianGap, windows, history,
     } = await buildHeatmapAndPrediction();
     const stored = await readStoredSmartPrediction();
+    const smartWindows = buildSmartWindows({ stored, minutesOfDay, total });
 
-    // THE WHOLE PREDICTION IS THE MODEL'S. Its ranges, its minutes, its
-    // percentages, its wildcards — nothing here recomputes any of them.
-    //
-    // They used to be recomputed: Gemini was asked only for the hour range and
-    // the statistical engine filled in the rest, which meant that whenever the
-    // model picked the hours the counts already ranked highest — with a clean
-    // pattern, every time — the AI prediction came out byte-identical to the
-    // statistical one and the card said "AI" over numbers the model had never
-    // produced. Two analyses that cannot disagree are one analysis.
-    //
-    // The one value still computed is `count`: how many sightings have actually
-    // landed in that range, all-time. That is a measurement of the past, not a
-    // prediction of the day, and the card labels it "all-time".
-    //
-    // Sanitized again on the way out, not only on the way in. What is stored was
-    // written by a previous deploy under whatever rules were in force then;
-    // change WORK_HOURS_END or BREAK_TIMES and yesterday's stored answer can
-    // suddenly straddle a break or sit after closing. Re-checking here costs
-    // nothing and means a config change takes effect immediately rather than at
-    // the next cron run.
-    const breaks = getBreaks();
-    const workHours = getWorkHours();
-    let smartWindows = null;
-    if (stored) {
-      const clean = sanitizeWindows(stored.windows, { workHours, breaks, max: getPhaseCeiling() });
-      const wilds = sanitizeWildcards(stored.wildcards, { workHours, breaks, windows: clean });
-      smartWindows = clean.map((w, i) => {
-        const from = w.predictedHourStart * 60;
-        const to = w.predictedHourEnd * 60;
-        const moments = w.moments.map((m) => ({
-          ...m,
-          source: 'ai',
-          // The 59-second rule is the app's, not the model's: a prediction of
-          // 14:07 is met from 14:07:00 to 14:07:59 and missed at 14:08. Applied
-          // here so an AI moment and a statistical one are judged identically.
-          ...hitWindow(m.hour * 60 + m.minute),
-        }));
-        // The wildcard for the gap AFTER this phase, so it renders between this
-        // card and the next exactly as the statistical one does.
-        const wild = wilds.find((x) => x.afterWindow === i);
-        return {
-          hourStart: w.predictedHourStart,
-          hourEnd: w.predictedHourEnd,
-          count: minutesOfDay.filter((m) => m >= from && m < to).length,
-          total,
-          confidence: w.confidence,
-          rationale: w.rationale,
-          tiers: wild
-            ? [...moments, {
-              tier: 'wildcard',
-              hour: wild.hour,
-              minute: wild.minute,
-              pct: wild.pct,
-              note: wild.note,
-              source: 'ai',
-              ...hitWindow(wild.hour * 60 + wild.minute),
-            }]
-            : moments,
-        };
-      });
-    }
-
-    const payload = { total, heatmap, windows, smartWindows, todayMinutes };
+    const payload = {
+      total, heatmap, windows, smartWindows, todayMinutes, history,
+    };
     if (req.user) payload.byPerson = byPerson;
     res.json(payload);
   } catch (e) {
@@ -809,6 +941,7 @@ module.exports = {
   router,
   recomputeSmartPrediction,
   readStoredSmartPrediction,
+  snapshotTodayPhases,
   prediction: {
     HIT_TOLERANCE_MIN,
     QUARTER_MIN,
