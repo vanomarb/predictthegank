@@ -36,6 +36,16 @@
     if (signInLabel) signInLabel.textContent = currentUser ? `${currentUser.name} · console` : 'sign in';
   })();
 
+  // Highest alert id already surfaced on this device — see the matching note
+  // in admin.js. No fire button here (that's console-only); this page only
+  // needs to detect and notify.
+  let lastAlertId = 0;
+  try { lastAlertId = Number.parseInt(localStorage.getItem('lastAlertId'), 10) || 0; } catch (e) { /* private mode */ }
+  function setLastAlertId(id) {
+    lastAlertId = id;
+    try { localStorage.setItem('lastAlertId', String(id)); } catch (e) { /* private mode */ }
+  }
+
   let timeZone = 'UTC';
   let workHours = null; // the office's logging window, from /api/config
   let countdownOverride = null; // COUNTDOWN_OVERRIDE_MS, testing only
@@ -686,6 +696,23 @@
   }
 
   Tracker.createPoller(pollStats, POLL_MS).start();
+
+  // Polled independently of pollStats — a slow/erroring alerts fetch shouldn't
+  // stall the stats refresh, or vice versa. Started unconditionally (not
+  // gated on currentUser) so anonymous visitors are notified too.
+  async function pollAlerts() {
+    const { alerts } = await Tracker.api(`/alerts?since=${lastAlertId}`);
+    if (alerts.length === 0) return;
+    alerts.forEach((a) => {
+      if (!currentUser || a.firedBy !== currentUser.id) {
+        Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
+        showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+      }
+    });
+    setLastAlertId(Math.max(...alerts.map((a) => a.id)));
+  }
+  Tracker.createPoller(pollAlerts, POLL_MS).start();
+
   ticker.start();
 
   // Confetti: a real Lottie animation (see scripts/generate-confetti-lottie.js)

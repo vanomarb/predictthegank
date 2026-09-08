@@ -2,6 +2,17 @@
   const POLL_MS = 5000;
   let currentUser = null;
   let poller = null;
+  let alertPoller = null;
+
+  // Highest alert id already surfaced, persisted so a reload doesn't replay
+  // alerts this device has already seen. Not an ack across devices/sessions —
+  // just a local watermark against the poller re-showing the same one.
+  let lastAlertId = 0;
+  try { lastAlertId = Number.parseInt(localStorage.getItem('lastAlertId'), 10) || 0; } catch (e) { /* private mode */ }
+  function setLastAlertId(id) {
+    lastAlertId = id;
+    try { localStorage.setItem('lastAlertId', String(id)); } catch (e) { /* private mode */ }
+  }
 
   const el = (id) => document.getElementById(id);
 
@@ -192,6 +203,7 @@
     await Tracker.api('/auth/logout', { method: 'POST' });
     currentUser = null;
     if (poller) poller.stop();
+    if (alertPoller) alertPoller.stop();
     ticker.stop();
     switchToAuth();
   });
@@ -239,6 +251,34 @@
       await refresh();
     } catch (err) { showToast(err.message); }
   });
+
+  // ---- alert everyone ----
+  el('alertBtn').addEventListener('click', async () => {
+    const btn = el('alertBtn');
+    btn.disabled = true;
+    try {
+      await Tracker.api('/alerts', { method: 'POST' });
+      showToast('Alert sent.');
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Polled independently of refresh()/stats — a slow or erroring alerts fetch
+  // shouldn't stall the sightings poll, or vice versa.
+  async function pollAlerts() {
+    const { alerts } = await Tracker.api(`/alerts?since=${lastAlertId}`);
+    if (alerts.length === 0) return;
+    alerts.forEach((a) => {
+      if (!currentUser || a.firedBy !== currentUser.id) {
+        Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
+        showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+      }
+    });
+    setLastAlertId(Math.max(...alerts.map((a) => a.id)));
+  }
 
   // ---- invites (admin only) ----
   el('genInviteBtn').addEventListener('click', async () => {
@@ -588,6 +628,8 @@
     if (currentUser.isAdmin) loadInvites();
     poller = Tracker.createPoller(refresh, POLL_MS);
     poller.start();
+    if (!alertPoller) alertPoller = Tracker.createPoller(pollAlerts, POLL_MS);
+    alertPoller.start();
     ticker.start();
     // Here rather than at boot: the console is only now on screen, and the
     // advice is about its log button.

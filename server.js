@@ -9,6 +9,7 @@ const path = require('path');
 
 const authRoutes = require('./routes/auth');
 const { router: sightingsRoutes } = require('./routes/sightings');
+const alertsRoutes = require('./routes/alerts');
 const cronRoutes = require('./routes/cron');
 const adminRoutes = require('./routes/admin');
 const { getWorkHours, getBreaks, getTimeZone } = require('./services/work-hours');
@@ -155,6 +156,7 @@ app.use('/api/admin/config/refresh', aiRefreshLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/sightings', sightingsRoutes);
+app.use('/api/alerts', alertsRoutes);
 // Scheduled work, called from outside. Authorized by CRON_SECRET, not a cookie
 // — see routes/cron.js.
 app.use('/api/cron', cronRoutes);
