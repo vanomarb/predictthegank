@@ -150,6 +150,22 @@
       </div>
     </section>
 
+    <!-- Signed-in visitors only — the data isn't sent to anonymous ones
+         either (see req.user gate in routes/sightings.js). -->
+    <section id="leaderboardSection" style="display:none;" class="mt-3 border-t border-line pt-[30px]">
+      <p class="mb-1.5 text-xs uppercase tracking-[0.12em] text-fg-faint">Leaderboard</p>
+      <p class="mb-4 text-xs text-fg-faint">Most sightings logged.</p>
+      <div id="leaderboardTabs" class="mb-4 flex max-w-[380px] gap-1 rounded-md border border-line bg-ink-950 p-[3px]">
+        <button data-period="today" type="button" data-active
+                class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Today</button>
+        <button data-period="week" type="button"
+                class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">This week</button>
+        <button data-period="allTime" type="button"
+                class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">All-time</button>
+      </div>
+      <div id="leaderboardList" class="grid max-w-[380px] gap-1.5"></div>
+    </section>
+
     <footer class="px-5 pt-10 pb-2.5 text-center">
       <p class="text-[11px] tabular-nums text-fg-faint">Updates automatically every 5s · Internal team fun, not
         HR-sanctioned</p>

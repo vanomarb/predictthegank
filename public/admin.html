@@ -166,7 +166,16 @@
 
     <section id="panel-team" class="hidden data-active:block">
       <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
-        <div id="byPerson" class="flex flex-wrap items-center gap-2"></div>
+        <p class="mb-3.5 text-xs uppercase tracking-[0.12em] text-fg-faint">Leaderboard — most logged</p>
+        <div id="leaderboardTabs" class="mb-4 flex gap-1 rounded-md border border-line bg-ink-950 p-[3px]">
+          <button data-period="today" type="button" data-active
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Today</button>
+          <button data-period="week" type="button"
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">This week</button>
+          <button data-period="allTime" type="button"
+                  class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">All-time</button>
+        </div>
+        <div id="leaderboardList" class="grid gap-1.5"></div>
       </div>
     </section>
 

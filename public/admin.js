@@ -32,8 +32,6 @@
   const ROW_DELETE = 'log-row-delete inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full '
     + 'border border-transparent text-fg-faint transition-colors duration-150 hover:border-bad hover:text-bad '
     + 'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400';
-  const PILL = 'inline-flex items-center gap-[7px] rounded-full border border-line bg-ink-800 py-[7px] pr-3 pl-2 text-[13px]';
-  const PILL_COUNT = 'tabular-nums text-amber-300';
   const EMPTY = 'p-4 text-[13px] text-fg-muted';
   // The admin console's phase cards are the compact variant of the public
   // tracker's — same idea: the range is the card, the tiers are rows inside it.
@@ -580,18 +578,18 @@
     });
   }
 
-  function renderByPerson(byPerson) {
-    const wrap = el('byPerson');
-    const names = Object.keys(byPerson || {});
-    if (names.length === 0) {
-      wrap.innerHTML = `<span class="text-[13px] text-fg-muted">No entries yet.</span>`;
-      return;
-    }
-    wrap.innerHTML = names
-      .sort((a, b) => byPerson[b] - byPerson[a])
-      .map((n) => `<span class="${PILL}">${n} <span class="${PILL_COUNT}">${byPerson[n]}</span></span>`)
-      .join('');
+  // Which period's leaderboard is showing, and the latest data for each —
+  // refresh() updates the data every poll, but only re-renders the one the
+  // reader is actually looking at.
+  let leaderboardPeriod = 'today';
+  let leaderboards = { today: {}, week: {}, allTime: {} };
+  function renderLeaderboardPanel() {
+    Tracker.renderLeaderboard(el('leaderboardList'), leaderboards[leaderboardPeriod]);
   }
+  Tracker.initPeriodTabs(el('leaderboardTabs'), (period) => {
+    leaderboardPeriod = period;
+    renderLeaderboardPanel();
+  });
 
   async function refresh() {
     const [{ sightings }, stats] = await Promise.all([
@@ -606,7 +604,8 @@
     checkPrediction(windows, todayMinutes, Tracker.nowMinutes(timeZone),
       { todayIsWorkDay: windows.length > 0 ? windows[0].todayIsWorkDay !== false : false });
     Tracker.renderDayTimeline(el('dayTimeline'), dayHistory, selectedDate, onDaySelect);
-    renderByPerson(stats.byPerson);
+    leaderboards = { today: stats.leaderboardToday, week: stats.leaderboardWeek, allTime: stats.byPerson };
+    renderLeaderboardPanel();
     el('totalStat').textContent = stats.total;
     el('peakStat').textContent = Tracker.peakLabel(stats);
   }

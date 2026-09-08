@@ -53,6 +53,18 @@
   let featured = null; // the currently-featured tier window, updated every poll
   let phases = []; // the day's phases, refreshed each poll — the ticker reads this
   let todayMinutes = []; // today's sightings, minutes since midnight — drives the hit/miss badges
+
+  // Which leaderboard period is showing, and the latest data for each — see
+  // the matching note in admin.js.
+  let leaderboardPeriod = 'today';
+  let leaderboards = { today: {}, week: {}, allTime: {} };
+  function renderLeaderboardPanel() {
+    Tracker.renderLeaderboard(document.getElementById('leaderboardList'), leaderboards[leaderboardPeriod]);
+  }
+  Tracker.initPeriodTabs(document.getElementById('leaderboardTabs'), (period) => {
+    leaderboardPeriod = period;
+    renderLeaderboardPanel();
+  });
   // Which phase cards the reader has opened or closed by hand, keyed on the
   // phase's start hour. Deliberately not persisted: it is the state of this
   // reading session, not a preference.
@@ -816,6 +828,17 @@
     Tracker.renderHeatmap(heatmapGrid, stats.heatmap, tooltip);
     totalStat.textContent = stats.total;
     peakStat.textContent = Tracker.peakLabel(stats);
+
+    // Only present for signed-in requests (see req.user gate in
+    // routes/sightings.js) — anonymous visitors never see who's logging.
+    const leaderboardSection = document.getElementById('leaderboardSection');
+    if (leaderboardSection) {
+      leaderboardSection.style.display = stats.byPerson ? '' : 'none';
+      if (stats.byPerson) {
+        leaderboards = { today: stats.leaderboardToday, week: stats.leaderboardWeek, allTime: stats.byPerson };
+        renderLeaderboardPanel();
+      }
+    }
   }
 
   Tracker.createPoller(pollStats, POLL_MS).start();
