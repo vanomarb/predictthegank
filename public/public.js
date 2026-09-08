@@ -20,7 +20,6 @@
   const tooltip = Tracker.attachTooltip(document.getElementById('tooltip'));
   const spotBtn = document.getElementById('spotBtn');
   const signInLabel = document.getElementById('signInLabel');
-  const alertBtn = document.getElementById('alertBtn');
 
   Tracker.initThemeToggle(document.getElementById('themeToggle'));
 
@@ -36,7 +35,7 @@
       currentUser = null; // not signed in — the ordinary, anonymous visitor
     }
     if (signInLabel) signInLabel.textContent = currentUser ? `${currentUser.name} · console` : 'sign in';
-    if (alertBtn) alertBtn.style.display = currentUser ? '' : 'none';
+    syncSpotButton(); // picks up the signed-in "log & alert" label
   })();
 
   // Highest alert id already surfaced on this device — see the matching note
@@ -151,7 +150,9 @@
     } else {
       spotHint.textContent = open ? OPEN_HINT : label;
     }
-    document.getElementById('spotBtnLabel').textContent = open ? 'I see them — log it!' : 'Logging closed';
+    document.getElementById('spotBtnLabel').textContent = open
+      ? (currentUser ? 'I see them — log & alert!' : 'I see them — log it!')
+      : 'Logging closed';
   }
 
   // opts is passed straight through to Tracker.toast; { fire: true } is the
@@ -859,6 +860,9 @@
     anim.addEventListener('complete', () => { anim.destroy(); box.remove(); });
   }
 
+  // Logging a sighting fires the "alert everyone" broadcast in the same
+  // click, for signed-in visitors — the two used to be separate buttons.
+  // Anonymous visitors just log: POST /api/alerts requires a real account.
   spotBtn.addEventListener('click', async () => {
     if (spotting) return;
     // Belt and braces: the button is disabled out of hours, but a click that
@@ -873,13 +877,17 @@
       // Signed-in visitors (checked at load) log under their own account, same
       // as the admin console's log button; everyone else logs anonymously.
       const path = currentUser ? '/sightings' : '/sightings/anonymous';
-      const data = await Tracker.api(path, { method: 'POST' });
+      const [data, alerted] = await Promise.all([
+        Tracker.api(path, { method: 'POST' }),
+        currentUser ? Tracker.api('/alerts', { method: 'POST' }).then(() => true).catch(() => false) : null,
+      ]);
       playConfettiLottie(spotBtn);
+      const alertNote = alerted === true ? ' Alert sent.' : alerted === false ? ' (alert failed to send)' : '';
       if (data.alreadyLogged) {
-        showToast('Someone already logged this one moments ago.');
+        showToast('Someone already logged this one moments ago.' + alertNote);
       } else {
-        if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.');
-        else showToast('Logged! Thanks for the tip.');
+        if (data.merged) showToast('Merged with a sighting logged moments ago by someone else.' + alertNote);
+        else showToast('Logged! Thanks for the tip.' + alertNote);
         // Immediate verdict on THIS log, same rule as the badges — not the
         // phase-close sweep's recap of the whole hour, but "did what I just
         // did land on a predicted minute," told right away.
@@ -894,20 +902,4 @@
       syncSpotButton();
     }
   });
-
-  // Signed-in visitors only (see the currentUser check above) — same handler
-  // shape as admin.js's alertBtn.
-  if (alertBtn) {
-    alertBtn.addEventListener('click', async () => {
-      alertBtn.disabled = true;
-      try {
-        await Tracker.api('/alerts', { method: 'POST' });
-        showToast('Alert sent.');
-      } catch (err) {
-        showToast(err.message);
-      } finally {
-        alertBtn.disabled = false;
-      }
-    });
-  }
 })();

@@ -170,7 +170,12 @@
     switchToAuth();
   });
 
-  // ---- log / undo ----
+  // ---- log (+ alert) / undo ----
+  // Logging a sighting and alerting everyone are the same real-world moment —
+  // "I see them" — so one press does both, every time. The alert is fired
+  // alongside the log rather than blocking on it; if it fails, the log still
+  // goes through and the toast just says so, since the log is the record of
+  // truth and the alert is a courtesy on top of it.
   el('logBtn').addEventListener('click', async (e) => {
     if (logging) return;
     // Belt and braces, as on the public page: the button is disabled out of
@@ -193,16 +198,20 @@
     logging = true;
     btn.disabled = true;
     try {
-      const data = await Tracker.api('/sightings', { method: 'POST' });
+      const [data, alerted] = await Promise.all([
+        Tracker.api('/sightings', { method: 'POST' }),
+        Tracker.api('/alerts', { method: 'POST' }).then(() => true).catch(() => false),
+      ]);
+      const alertNote = alerted ? ' Alert sent.' : ' (alert failed to send)';
       if (data.alreadyLogged) {
-        showToast('You already logged this one.');
+        showToast('You already logged this one.' + alertNote);
       } else {
         // Immediate verdict on THIS log, same rule as the badges — not the
         // phase-close sweep's recap of the whole hour, but "did what I just
         // did land on a predicted minute," told right away. No modal here —
         // the console gets toasts and notifications, see the note above.
         const { hit, line } = Tracker.loggedOutcome(phases, Tracker.nowMinutes(timeZone));
-        showToast(data.merged ? `Merged with a sighting logged moments ago — ${line}` : line);
+        showToast((data.merged ? `Merged with a sighting logged moments ago — ${line}` : line) + alertNote);
         Tracker.notify(hit ? 'Called it — HR showed up' : 'Wrong prediction', line, 'outcome');
       }
       await refresh();
@@ -220,20 +229,6 @@
       showToast('Undone.');
       await refresh();
     } catch (err) { showToast(err.message); }
-  });
-
-  // ---- alert everyone ----
-  el('alertBtn').addEventListener('click', async () => {
-    const btn = el('alertBtn');
-    btn.disabled = true;
-    try {
-      await Tracker.api('/alerts', { method: 'POST' });
-      showToast('Alert sent.');
-    } catch (err) {
-      showToast(err.message);
-    } finally {
-      btn.disabled = false;
-    }
   });
 
   // Polled independently of refresh()/stats — a slow or erroring alerts fetch
@@ -429,7 +424,7 @@
       Icons.set(el('logBtnIcon'), open ? 'eye' : 'lock-simple');
       if (!open) el('logHint').innerHTML = Icons.svg('clock-countdown') + ' ' + label;
     }
-    el('logBtnLabel').textContent = open ? 'Log sighting' : 'Logging closed';
+    el('logBtnLabel').textContent = open ? 'Log & alert' : 'Logging closed';
   }
 
   // A fact about the page, not about one window — see public.js.
