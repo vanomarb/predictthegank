@@ -6,7 +6,8 @@ Node/Express backend, plain JS frontend, no build step.
 ## What's in here
 
 - `server.js` — Express app, security middleware, mounts routes
-- `db.js` — SQLite schema (accounts, invites, sightings, sighting_logs)
+- `db.js` — the Postgres (Supabase) connection pool and query helpers
+- `migrations/` — the schema, one numbered SQL file per change; applied by `npm run migrate`
 - `routes/auth.js` — nickname-only enter (find-or-create, no password), logout
 - `routes/sightings.js` — log a sighting (with server-side dedup), list, stats
 - `middleware/auth.js` — JWT cookie auth
@@ -32,6 +33,9 @@ Node/Express backend, plain JS frontend, no build step.
   the 12-glyph Poppins subset the 3D countdown extrudes (`npm run build:typeface`).
   Needs the `opentype.js` devDependency and network access; the output is
   committed, so a plain deploy never runs it.
+- `scripts/migrate.js` — applies the files in `migrations/` to the database, once
+  each, in filename order (`npm run migrate`). Tracks what it has run in a
+  `schema_migrations` table, so it is safe to run on every deploy; see "Migrations"
 - `scripts/add-sighting.js` — records sightings at specific times
   (`node scripts/add-sighting.js 9:37am 2:09pm`), for seeding and for checking the
   page against known data. The "I see them" button can only log the current
@@ -47,7 +51,9 @@ npm install
 cp .env.example .env
 # edit .env: set JWT_SECRET to a long random string
 #   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+#   and SUPABASE_DB_URL to the project's pooled connection string
 
+npm run migrate   # create the schema (safe to re-run; does nothing when current)
 node server.js
 # visit http://localhost:3000/admin, pick a nickname (max 8 chars: letters,
 # numbers, - or _). The very first nickname anyone ever enters becomes admin.
@@ -57,6 +63,44 @@ Anyone on your team can join by picking a nickname — no invite code. An
 already-used nickname signs back into that same account; there's no password,
 so this only works as a small trusted-team tool (see "Notes on the security
 model" below).
+
+## Migrations
+
+The schema lives in `migrations/`, one numbered SQL file per change, and
+`npm run migrate` applies the ones the database has not seen yet:
+
+```bash
+npm run migrate                  # apply everything pending
+npm run migrate -- --status      # list applied/pending, change nothing
+npm run migrate -- --dry-run     # say what would run, run none of it
+npm run migrate -- --baseline    # record every file as applied, run none
+```
+
+What it has already run is recorded in a `schema_migrations` table (filename,
+checksum, when, how long), written in the same transaction as the migration
+itself. So a failed migration leaves neither its changes nor its record behind,
+re-running after a failure is safe, and running it when there is nothing to do
+costs one query. Each file runs in its own transaction, and the whole run holds
+a Postgres advisory lock, so two deploys migrating at once queue rather than
+race.
+
+To change the schema, add a file with the next number — never edit one that has
+already been applied. The database keeps the version it ran; editing the file
+changes nothing except the checksum, which `npm run migrate` then reports as
+drift on every run until a new migration reconciles it.
+
+**A database created before this script existed has to be baselined once.**
+The files are not all replayable — `0004` opens with `DROP TABLE IF EXISTS
+smart_predictions`, which would discard the current prediction, and `0007`
+drops a column. When the schema is there but `schema_migrations` is not, the
+script refuses to run and asks for `--baseline`, which records the files as
+applied without executing any of them. Baseline only a database whose schema is
+actually current; if it is behind, apply the missing files by hand first.
+
+Two files share the `0006` prefix (`0006_alerts.sql`, `0006_phase_history.sql`)
+from parallel branches. They are ordered deterministically — alphabetically,
+within the prefix — and the script warns about a duplicated prefix while either
+one is still pending.
 
 ## Deploying to Vercel
 

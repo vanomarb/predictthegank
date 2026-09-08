@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
+    "migrate": "node scripts/migrate.js",
     "build:confetti": "node scripts/generate-confetti-lottie.js",
     "build:miss": "node scripts/generate-miss-lottie.js",
     "build:fire": "node scripts/generate-fire-lottie.js",
