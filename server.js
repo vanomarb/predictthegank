@@ -117,7 +117,8 @@ app.get('/admin', (req, res) => {
   sendHtmlWithNonce(res, 'admin.html');
 });
 
-// Slow down brute-force attempts on login/register.
+// Slow down brute-force nickname-guessing/creation attempts (no password to
+// slow an attacker down otherwise).
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -125,8 +126,7 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many attempts. Try again later.' },
 });
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/enter', authLimiter);
 
 // The anonymous "spot it now" button is public and unauthenticated, so it
 // needs its own abuse guard — generous enough for genuine excited clicking,

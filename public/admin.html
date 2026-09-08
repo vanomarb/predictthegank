@@ -33,52 +33,17 @@
 
   <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
     <h1 class="mb-1 text-[34px] font-semibold tracking-[-0.015em]">Control console</h1>
-    <p class="mb-5 text-sm text-fg-muted">Invite-only. Ask an admin for a code to join the roster.</p>
+    <p class="mb-5 text-sm text-fg-muted">Pick a nickname to join. An existing nickname signs back into that account.</p>
 
-    <!-- data-active marks the selected tab / visible pane. An attribute rather
-         than a class so the selector outranks the base utilities. -->
-    <div class="mb-5 flex gap-1 rounded-md border border-line bg-ink-950 p-[3px]">
-      <button id="tabSignIn" type="button" data-active
-              class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Sign in</button>
-      <button id="tabRegister" type="button"
-              class="flex-1 cursor-pointer rounded-md bg-transparent p-2 text-[13px] font-semibold text-fg transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:bg-ink-700">Register</button>
-    </div>
-
-    <form id="signInPane" autocomplete="on" data-active class="hidden flex-col data-active:flex">
+    <form id="enterPane" autocomplete="on" class="flex flex-col">
       <div class="mb-3.5 flex flex-col gap-1.5">
-        <label for="siName" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Call sign</label>
-        <input id="siName" name="name" placeholder="Your name" autocomplete="username"
+        <label for="nicknameInput" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Nickname</label>
+        <input id="nicknameInput" name="name" placeholder="8 chars max" autocomplete="username"
+               maxlength="8" pattern="[A-Za-z0-9_-]{1,8}"
                class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
       </div>
-      <div class="mb-3.5 flex flex-col gap-1.5">
-        <label for="siPassword" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Password</label>
-        <input id="siPassword" name="password" type="password" placeholder="8+ characters" autocomplete="current-password"
-               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
-      </div>
-      <button id="loginBtn" type="submit"
-              class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">Sign in</button>
-    </form>
-
-    <form id="registerPane" autocomplete="on" class="hidden flex-col data-active:flex">
-      <p id="bootstrapNotice" style="display:none;"
-         class="mb-4 inline-flex items-center gap-1.5 rounded-full border border-[rgba(242,169,59,0.4)] bg-[rgba(242,169,59,0.1)] px-[9px] py-1 text-[11px] uppercase tracking-[0.08em] text-amber-300">No admin yet — you'll become the admin</p>
-      <div class="mb-3.5 flex flex-col gap-1.5">
-        <label for="regName" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Call sign</label>
-        <input id="regName" name="name" placeholder="Your name" autocomplete="username"
-               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
-      </div>
-      <div class="mb-3.5 flex flex-col gap-1.5">
-        <label for="regPassword" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Password</label>
-        <input id="regPassword" name="password" type="password" placeholder="8+ characters" autocomplete="new-password"
-               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
-      </div>
-      <div class="mb-3.5 flex flex-col gap-1.5" id="inviteFieldGroup">
-        <label for="regInvite" class="text-[11px] uppercase tracking-[0.08em] text-fg-faint">Invite code</label>
-        <input id="regInvite" name="invite" placeholder="12-character code" autocomplete="off"
-               class="rounded-md border border-line-strong bg-ink-950 px-[13px] py-[11px] text-sm text-fg placeholder:text-fg-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400">
-      </div>
-      <button id="registerBtn" type="submit"
-              class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">Register</button>
+      <button id="enterBtn" type="submit"
+              class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">Continue</button>
     </form>
 
     <p id="authError" class="mt-3.5 text-[13px] text-bad" style="display:none;"></p>
@@ -129,8 +94,6 @@
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Field log</button>
       <button data-tab="team" type="button"
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Team</button>
-      <button data-tab="invites" id="invitesTabBtn" type="button" style="display:none"
-              class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Invites</button>
       <button data-tab="config" type="button"
               class="mr-[18px] shrink-0 cursor-pointer border-b-2 border-b-transparent bg-transparent px-1 py-[9px] text-[13px] font-semibold whitespace-nowrap text-fg-muted transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 data-active:border-b-amber-400 data-active:text-fg">Config</button>
     </nav>
@@ -180,7 +143,7 @@
 
     <section id="panel-log" class="hidden data-active:block">
       <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))]">
-        <!-- Admin only — see switchToApp in admin.js, which mirrors invitesTabBtn's gating. -->
+        <!-- Admin only — see switchToApp in admin.js. -->
         <div id="logBulkBar" style="display:none;" class="flex items-center justify-between gap-2.5 border-b border-line px-3.5 py-2.5">
           <label class="flex cursor-pointer items-center gap-2 text-[13px] text-fg-muted">
             <input id="logSelectAll" type="checkbox" class="accent-amber-500">
@@ -196,17 +159,6 @@
     <section id="panel-team" class="hidden data-active:block">
       <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
         <div id="byPerson" class="flex flex-wrap items-center gap-2"></div>
-      </div>
-    </section>
-
-    <section id="panel-invites" class="hidden data-active:block">
-      <div class="rounded-[20px] border border-line bg-[linear-gradient(180deg,var(--ink-900),var(--ink-800))] p-6">
-        <div class="mb-3.5 flex items-center justify-between gap-2.5">
-          <p class="text-[13px] text-fg-muted">Each code is single-use. Send it out of band (Slack DM, etc.)</p>
-          <button id="genInviteBtn" type="button"
-                  class="cursor-pointer rounded-md border border-amber-500 bg-amber-500 px-[18px] py-3 text-sm font-semibold text-amber-ink transition-[transform,border-color,background-color] duration-150 hover:border-amber-400 hover:bg-amber-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 active:scale-[0.97]">New invite</button>
-        </div>
-        <div id="inviteList"></div>
       </div>
     </section>
 
