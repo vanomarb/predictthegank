@@ -9,6 +9,7 @@ const path = require('path');
 
 const authRoutes = require('./routes/auth');
 const { router: sightingsRoutes } = require('./routes/sightings');
+const alertsRoutes = require('./routes/alerts');
 const cronRoutes = require('./routes/cron');
 const adminRoutes = require('./routes/admin');
 const { getWorkHours, getBreaks, getTimeZone } = require('./services/work-hours');
@@ -116,7 +117,16 @@ app.get('/admin', (req, res) => {
   sendHtmlWithNonce(res, 'admin.html');
 });
 
-// Slow down brute-force attempts on login/register.
+// A single big button that fires the same alert as the "Alert everyone"
+// buttons on / and /admin. Its own onboarding (nickname prompt) lives in
+// button.js, gated by localStorage rather than a server redirect, for the
+// same reason /admin isn't gated here either — see the note above.
+app.get('/button', (req, res) => {
+  sendHtmlWithNonce(res, 'button.html');
+});
+
+// Slow down brute-force nickname-guessing/creation attempts (no password to
+// slow an attacker down otherwise).
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -124,8 +134,7 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many attempts. Try again later.' },
 });
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/enter', authLimiter);
 
 // The anonymous "spot it now" button is public and unauthenticated, so it
 // needs its own abuse guard — generous enough for genuine excited clicking,
@@ -155,6 +164,7 @@ app.use('/api/admin/config/refresh', aiRefreshLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/sightings', sightingsRoutes);
+app.use('/api/alerts', alertsRoutes);
 // Scheduled work, called from outside. Authorized by CRON_SECRET, not a cookie
 // — see routes/cron.js.
 app.use('/api/cron', cronRoutes);

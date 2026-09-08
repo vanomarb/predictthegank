@@ -1505,6 +1505,64 @@ const Tracker = (() => {
     return { start, stop };
   }
 
+  // Alarm sound presets for the "alert everyone" feature. Per-browser choice
+  // (like NOTIFY_KEY above), not per-account — it doesn't need to follow
+  // anyone across devices. Edit this list to match whatever files land in
+  // public/sounds/; the id is what's persisted, so renaming a label later
+  // won't reset anyone's saved choice.
+  const ALARM_SOUNDS = [
+    { id: 'none', label: 'None (silent)', file: null },
+    { id: 'klaxon', label: 'Klaxon', file: '/sounds/alexis_gaming_cam-alerte-346112.mp3' },
+    { id: 'ping', label: 'Ping', file: '/sounds/notification_message-notification-alert-2-331726.mp3' },
+  ];
+  const SOUND_KEY = 'alarmSound';
+  // Defaults to the first real preset (not "none") so the alarm works out of
+  // the box — the notify bell is opt-in because a permission prompt is
+  // intrusive, but a picker with an obvious "None" option isn't, so there's
+  // no reason to ship this silent by default.
+  const DEFAULT_SOUND_ID = ALARM_SOUNDS.find((s) => s.id !== 'none').id;
+
+  function getAlarmSound() {
+    try {
+      const id = localStorage.getItem(SOUND_KEY);
+      return ALARM_SOUNDS.some((s) => s.id === id) ? id : DEFAULT_SOUND_ID;
+    } catch (e) { return DEFAULT_SOUND_ID; }
+  }
+  function setAlarmSound(id) {
+    try { localStorage.setItem(SOUND_KEY, id); } catch (e) { /* private mode */ }
+  }
+
+  // One Audio element per sound, created on first use and reused — avoids
+  // re-decoding the file on every alert.
+  const audioCache = new Map();
+  function playAlarmSound() {
+    const sound = ALARM_SOUNDS.find((s) => s.id === getAlarmSound());
+    if (!sound || !sound.file) return; // "none"
+    let audio = audioCache.get(sound.id);
+    if (!audio) {
+      audio = new Audio(sound.file);
+      audioCache.set(sound.id, audio);
+    }
+    audio.currentTime = 0;
+    // Autoplay can be blocked until the page has seen a user gesture at
+    // all — same story as notify() below. Nothing useful to do about a
+    // rejection here, so it's swallowed rather than surfaced as an error.
+    audio.play().catch(() => {});
+  }
+
+  // Wires a <select>: fills it from ALARM_SOUNDS, restores the saved choice,
+  // persists on change. onChange(id) lets the caller toast the new choice.
+  function initSoundPicker(selectEl, onChange) {
+    if (!selectEl) return;
+    selectEl.innerHTML = ALARM_SOUNDS
+      .map((s) => `<option value="${s.id}">${s.label}</option>`).join('');
+    selectEl.value = getAlarmSound();
+    selectEl.addEventListener('change', () => {
+      setAlarmSound(selectEl.value);
+      if (onChange) onChange(selectEl.value);
+    });
+  }
+
   return {
     DAYS, DAYS_FULL, api, hourLabel, heatColor, attachTooltip, renderHeatmap,
     renderDayTimeline,
@@ -1519,6 +1577,7 @@ const Tracker = (() => {
     createPredictionWatcher, loggedOutcome,
     workHoursState, currentDayInTZ, dayTally,
     notify, notifyPermission, notifyWanted, requestNotifyPermission,
+    playAlarmSound, initSoundPicker,
     initNotifyToggle, createCountdownAlerter, ALERT_THRESHOLDS_S,
     createCountdownOverride,
   };

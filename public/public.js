@@ -20,6 +20,7 @@
   const tooltip = Tracker.attachTooltip(document.getElementById('tooltip'));
   const spotBtn = document.getElementById('spotBtn');
   const signInLabel = document.getElementById('signInLabel');
+  const alertBtn = document.getElementById('alertBtn');
 
   Tracker.initThemeToggle(document.getElementById('themeToggle'));
 
@@ -35,7 +36,17 @@
       currentUser = null; // not signed in — the ordinary, anonymous visitor
     }
     if (signInLabel) signInLabel.textContent = currentUser ? `${currentUser.name} · console` : 'sign in';
+    if (alertBtn) alertBtn.style.display = currentUser ? '' : 'none';
   })();
+
+  // Highest alert id already surfaced on this device — see the matching note
+  // in admin.js.
+  let lastAlertId = 0;
+  try { lastAlertId = Number.parseInt(localStorage.getItem('lastAlertId'), 10) || 0; } catch (e) { /* private mode */ }
+  function setLastAlertId(id) {
+    lastAlertId = id;
+    try { localStorage.setItem('lastAlertId', String(id)); } catch (e) { /* private mode */ }
+  }
 
   let timeZone = 'UTC';
   let workHours = null; // the office's logging window, from /api/config
@@ -287,6 +298,7 @@
     if (permission === 'denied') showToast('Your browser is blocking notifications for this site.');
     else showToast(on ? 'Roam alerts on — you will get a heads-up at 1 min and 30s.' : 'Roam alerts off.');
   });
+  Tracker.initSoundPicker(document.getElementById('soundPicker'), () => showToast('Alarm sound updated.'));
 
   // Fires for EVERY predicted moment, each with its own pair of alerts — see
   // createCountdownAlerter. The copy names which prediction is coming and how
@@ -806,6 +818,24 @@
   }
 
   Tracker.createPoller(pollStats, POLL_MS).start();
+
+  // Polled independently of pollStats — a slow/erroring alerts fetch shouldn't
+  // stall the stats refresh, or vice versa. Started unconditionally (not
+  // gated on currentUser) so anonymous visitors are notified too.
+  async function pollAlerts() {
+    const { alerts } = await Tracker.api(`/alerts?since=${lastAlertId}`);
+    if (alerts.length === 0) return;
+    alerts.forEach((a) => {
+      if (!currentUser || a.firedBy !== currentUser.id) {
+        Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
+        showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+        Tracker.playAlarmSound();
+      }
+    });
+    setLastAlertId(Math.max(...alerts.map((a) => a.id)));
+  }
+  Tracker.createPoller(pollAlerts, POLL_MS).start();
+
   ticker.start();
 
   // Confetti: a real Lottie animation (see scripts/generate-confetti-lottie.js)
@@ -864,4 +894,20 @@
       syncSpotButton();
     }
   });
+
+  // Signed-in visitors only (see the currentUser check above) — same handler
+  // shape as admin.js's alertBtn.
+  if (alertBtn) {
+    alertBtn.addEventListener('click', async () => {
+      alertBtn.disabled = true;
+      try {
+        await Tracker.api('/alerts', { method: 'POST' });
+        showToast('Alert sent.');
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        alertBtn.disabled = false;
+      }
+    });
+  }
 })();

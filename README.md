@@ -1,13 +1,13 @@
 # HR visit tracker — server
 
-Invite-only tool for a team to log and predict when HR roams by their stations.
-Node/Express + SQLite backend, plain JS frontend, no public sign-up.
+A team tool to log and predict when HR roams by their stations.
+Node/Express backend, plain JS frontend, no build step.
 
 ## What's in here
 
 - `server.js` — Express app, security middleware, mounts routes
 - `db.js` — SQLite schema (accounts, invites, sightings, sighting_logs)
-- `routes/auth.js` — register (invite-gated), login, logout, invite generation (admin)
+- `routes/auth.js` — nickname-only enter (find-or-create, no password), logout
 - `routes/sightings.js` — log a sighting (with server-side dedup), list, stats
 - `middleware/auth.js` — JWT cookie auth
 - `public/` — the frontend (plain HTML/JS, no build step)
@@ -39,7 +39,6 @@ Node/Express + SQLite backend, plain JS frontend, no public sign-up.
   Takes `--date YYYY-MM-DD` and `--dry-run` (which touches no database at all).
   Attributed to a "Seeded" system account, so per-person attribution does not
   claim a real person witnessed them
-- `scripts/init-admin.js` — one-time bootstrap to get your first invite code
 
 ## Local setup
 
@@ -49,15 +48,15 @@ cp .env.example .env
 # edit .env: set JWT_SECRET to a long random string
 #   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
-node scripts/init-admin.js
-# prints an invite code — the first account registered with it becomes admin
-
 node server.js
-# visit http://localhost:3000, register with that invite code
+# visit http://localhost:3000/admin, pick a nickname (max 8 chars: letters,
+# numbers, - or _). The very first nickname anyone ever enters becomes admin.
 ```
 
-Once you're an admin, use the "Generate invite code" button in the app to
-invite each coworker. Each code is single-use.
+Anyone on your team can join by picking a nickname — no invite code. An
+already-used nickname signs back into that same account; there's no password,
+so this only works as a small trusted-team tool (see "Notes on the security
+model" below).
 
 ## Deploying to Vercel
 
@@ -177,7 +176,6 @@ cd /home/you/hrtracker-server
 npm install --omit=dev
 cp .env.example .env
 nano .env   # set JWT_SECRET (long random string), NODE_ENV=production
-node scripts/init-admin.js   # note the invite code, keep it safe
 ```
 
 ### 3. Run it as a systemd service (keeps it alive, restarts on crash/reboot)
@@ -269,13 +267,6 @@ The route skips non-work days on its own, so the `1-5` above is belt and braces.
 The whole dataset is one file: `data/hr_tracker.db`. A simple cron job
 copying it somewhere (or `sqlite3 data/hr_tracker.db ".backup backup.db"` on
 a schedule) is enough for a team-sized tool like this.
-
-## Inviting your team
-
-You (the admin) generate a code per person from the in-app admin panel or
-`POST /api/auth/invites`. Send each person their own code out of band
-(Slack DM, etc.) — each code works once, so it can't be shared onward beyond
-the person you gave it to.
 
 ## Styling: Tailwind only
 
@@ -501,11 +492,13 @@ that belongs in `routes/sightings.js`.
 
 ## Notes on the security model
 
-- Passwords are hashed with bcrypt (12 rounds), never stored in plaintext.
+- There is no password. A nickname is the whole identity — entering one that
+  already exists signs back into that account, no verification at all.
+  Whoever knows (or guesses) a teammate's nickname can act as them. This is a
+  deliberate trade for simplicity, only appropriate for a small, trusted team.
 - Sessions are JWTs in httpOnly, sameSite cookies — not readable by page JS,
   not sent cross-site.
-- Login/register are rate-limited (20 attempts / 15 min / IP) to slow down
-  guessing.
-- This is appropriately secure for an internal team tool. It has not had a
-  professional security audit — don't put anything more sensitive than "who
-  logged what sighting" into it.
+- Entering a nickname is rate-limited (20 attempts / 15 min / IP) to slow down
+  bulk account creation.
+- This has not had a professional security audit — don't put anything more
+  sensitive than "who logged what sighting" into it.

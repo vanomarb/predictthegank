@@ -2,6 +2,17 @@
   const POLL_MS = 5000;
   let currentUser = null;
   let poller = null;
+  let alertPoller = null;
+
+  // Highest alert id already surfaced, persisted so a reload doesn't replay
+  // alerts this device has already seen. Not an ack across devices/sessions —
+  // just a local watermark against the poller re-showing the same one.
+  let lastAlertId = 0;
+  try { lastAlertId = Number.parseInt(localStorage.getItem('lastAlertId'), 10) || 0; } catch (e) { /* private mode */ }
+  function setLastAlertId(id) {
+    lastAlertId = id;
+    try { localStorage.setItem('lastAlertId', String(id)); } catch (e) { /* private mode */ }
+  }
 
   const el = (id) => document.getElementById(id);
 
@@ -23,8 +34,6 @@
     + 'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-400';
   const PILL = 'inline-flex items-center gap-[7px] rounded-full border border-line bg-ink-800 py-[7px] pr-3 pl-2 text-[13px]';
   const PILL_COUNT = 'tabular-nums text-amber-300';
-  const INVITE_ROW = 'flex items-center justify-between gap-2.5 border-b border-line py-2.5 text-[13px] tabular-nums last:border-b-0';
-  const INVITE_CODE = 'tracking-[0.03em] text-fg';
   const EMPTY = 'p-4 text-[13px] text-fg-muted';
   // The admin console's phase cards are the compact variant of the public
   // tracker's — same idea: the range is the card, the tiers are rows inside it.
@@ -88,6 +97,7 @@
     if (permission === 'denied') showToast('Your browser is blocking notifications for this site.');
     else showToast(on ? 'Roam alerts on — heads-up at 1 min and 30 s.' : 'Roam alerts off.');
   });
+  Tracker.initSoundPicker(el('soundPicker'), () => showToast('Alarm sound updated.'));
 
   // One pair of alerts per predicted moment — see the note in public.js.
   const checkCountdownAlert = Tracker.createCountdownAlerter((threshold, secondsLeft, entry) => {
@@ -135,55 +145,16 @@
     el('authError').style.display = 'none';
   }
 
-  // ---- bootstrap (first-run) registration ----
-  // Mirrors a first-run flow like Coolify's: while no admin exists yet,
-  // registration needs no invite code and the registrant becomes admin.
-  async function applyBootstrapUI() {
-    let needsBootstrap = false;
-    try {
-      ({ needsBootstrap } = await Tracker.api('/auth/register-status'));
-    } catch (e) { /* fall back to requiring an invite, the safe default */ }
-    el('inviteFieldGroup').style.display = needsBootstrap ? 'none' : '';
-    el('bootstrapNotice').style.display = needsBootstrap ? '' : 'none';
-    if (needsBootstrap) setAuthTab('register');
-  }
-
-  // ---- auth tabs ----
-  function setAuthTab(tab) {
-    const isSignIn = tab === 'signin';
-    setFlag(el('tabSignIn'), 'active', isSignIn);
-    setFlag(el('tabRegister'), 'active', !isSignIn);
-    setFlag(el('signInPane'), 'active', isSignIn);
-    setFlag(el('registerPane'), 'active', !isSignIn);
-    clearAuthError();
-  }
-  el('tabSignIn').addEventListener('click', () => setAuthTab('signin'));
-  el('tabRegister').addEventListener('click', () => setAuthTab('register'));
-
-  el('signInPane').addEventListener('submit', async (e) => {
+  // ---- auth: nickname only, no password, no invite. An existing nickname
+  // re-enters that same account (see routes/auth.js /enter); a new one
+  // creates it, and the very first account ever becomes admin. ----
+  el('enterPane').addEventListener('submit', async (e) => {
     e.preventDefault();
     clearAuthError();
     try {
-      const data = await Tracker.api('/auth/login', {
+      const data = await Tracker.api('/auth/enter', {
         method: 'POST',
-        body: { name: el('siName').value.trim(), password: el('siPassword').value },
-      });
-      currentUser = data;
-      switchToApp();
-    } catch (err) { showAuthError(err.message); }
-  });
-
-  el('registerPane').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearAuthError();
-    try {
-      const data = await Tracker.api('/auth/register', {
-        method: 'POST',
-        body: {
-          name: el('regName').value.trim(),
-          password: el('regPassword').value,
-          inviteCode: el('regInvite').value.trim(),
-        },
+        body: { name: el('nicknameInput').value.trim() },
       });
       currentUser = data;
       switchToApp();
@@ -194,6 +165,7 @@
     await Tracker.api('/auth/logout', { method: 'POST' });
     currentUser = null;
     if (poller) poller.stop();
+    if (alertPoller) alertPoller.stop();
     ticker.stop();
     switchToAuth();
   });
@@ -250,27 +222,33 @@
     } catch (err) { showToast(err.message); }
   });
 
-  // ---- invites (admin only) ----
-  el('genInviteBtn').addEventListener('click', async () => {
+  // ---- alert everyone ----
+  el('alertBtn').addEventListener('click', async () => {
+    const btn = el('alertBtn');
+    btn.disabled = true;
     try {
-      const data = await Tracker.api('/auth/invites', { method: 'POST' });
-      await loadInvites();
-      showToast('New invite code: ' + data.code);
-    } catch (err) { showToast(err.message); }
+      await Tracker.api('/alerts', { method: 'POST' });
+      showToast('Alert sent.');
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
-  async function loadInvites() {
-    const data = await Tracker.api('/auth/invites');
-    const list = el('inviteList');
-    if (data.invites.length === 0) {
-      list.innerHTML = `<p class="${EMPTY}">No invites yet.</p>`;
-      return;
-    }
-    list.innerHTML = data.invites.map((i) => {
-      const used = !!i.used_by;
-      return `<div class="${INVITE_ROW}"><span class="${INVITE_CODE}">${i.code}</span>`
-        + `<span class="${used ? 'text-fg-faint' : 'text-good'}">${used ? 'used by ' + i.used_by : 'unused'}</span></div>`;
-    }).join('');
+  // Polled independently of refresh()/stats — a slow or erroring alerts fetch
+  // shouldn't stall the sightings poll, or vice versa.
+  async function pollAlerts() {
+    const { alerts } = await Tracker.api(`/alerts?since=${lastAlertId}`);
+    if (alerts.length === 0) return;
+    alerts.forEach((a) => {
+      if (!currentUser || a.firedBy !== currentUser.id) {
+        Tracker.notify('Alert', `${a.firedByName} pressed the alert button`, 'team-alert');
+        showToast(`${a.firedByName} pressed the alert button.`, { fire: true });
+        Tracker.playAlarmSound();
+      }
+    });
+    setLastAlertId(Math.max(...alerts.map((a) => a.id)));
   }
 
   // ---- tabs ----
@@ -642,11 +620,11 @@
     el('authView').style.display = 'none';
     el('appView').style.display = 'block';
     el('whoamiText').textContent = currentUser.name;
-    el('invitesTabBtn').style.display = currentUser.isAdmin ? '' : 'none';
     el('logBulkBar').style.display = currentUser.isAdmin ? '' : 'none';
-    if (currentUser.isAdmin) loadInvites();
     poller = Tracker.createPoller(refresh, POLL_MS);
     poller.start();
+    if (!alertPoller) alertPoller = Tracker.createPoller(pollAlerts, POLL_MS);
+    alertPoller.start();
     ticker.start();
     // Here rather than at boot: the console is only now on screen, and the
     // advice is about its log button.
@@ -903,8 +881,7 @@
   function switchToAuth() {
     el('appView').style.display = 'none';
     el('authView').style.display = 'block';
-    ['siName', 'siPassword', 'regName', 'regPassword', 'regInvite'].forEach((id) => { el(id).value = ''; });
-    applyBootstrapUI();
+    el('nicknameInput').value = '';
   }
 
   (async () => {
