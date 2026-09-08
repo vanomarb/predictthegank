@@ -117,6 +117,14 @@ app.get('/admin', (req, res) => {
   sendHtmlWithNonce(res, 'admin.html');
 });
 
+// A single big button that fires the same alert as the "Alert everyone"
+// buttons on / and /admin. Its own onboarding (nickname prompt) lives in
+// button.js, gated by localStorage rather than a server redirect, for the
+// same reason /admin isn't gated here either — see the note above.
+app.get('/button', (req, res) => {
+  sendHtmlWithNonce(res, 'button.html');
+});
+
 // Slow down brute-force nickname-guessing/creation attempts (no password to
 // slow an attacker down otherwise).
 const authLimiter = rateLimit({
